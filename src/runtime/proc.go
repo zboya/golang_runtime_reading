@@ -105,6 +105,7 @@ var runtimeInitTime int64
 // Value to use for signal mask for newly created M's.
 var initSigmask sigset
 
+// 由runtime·rt0_go来调用，为真正的main函数准备
 // The main goroutine.
 func main() {
 	g := getg()
@@ -126,6 +127,7 @@ func main() {
 	mainStarted = true
 
 	systemstack(func() {
+		// 分配一个新的m，运行sysmon系统后台监控（定期垃圾回收和并发调度）
 		newm(sysmon, nil)
 	})
 
@@ -135,6 +137,7 @@ func main() {
 	// Those can arrange for main.main to run in the main thread
 	// by calling runtime.LockOSThread during initialization
 	// to preserve the lock.
+	// main goroutine会绑定一个M
 	lockOSThread()
 
 	if g.m != &m0 {
@@ -142,6 +145,7 @@ func main() {
 	}
 
 	runtime_init() // must be before defer
+	// 如果获取系统时间的ns为0，直接panic
 	if nanotime() == 0 {
 		throw("nanotime returning zero")
 	}
@@ -182,11 +186,13 @@ func main() {
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
 
+	// 执行init函数
 	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	close(main_init_done)
 
 	needUnlock = false
+	// 到这里的时候解除main g绑定m
 	unlockOSThread()
 
 	if isarchive || islibrary {
@@ -194,6 +200,8 @@ func main() {
 		// has a main, but it is not executed.
 		return
 	}
+
+	// 真正的执行main func in package main
 	fn = main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	if raceenabled {
@@ -204,6 +212,8 @@ func main() {
 	// another goroutine at the same time as main returns,
 	// let the other goroutine finish printing the panic trace.
 	// Once it does, it will exit. See issues 3934 and 20018.
+	// 到这里main func已经执行完了，如果其他的goroutine有panic，
+	// 让panic 信息打印出来
 	if atomic.Load(&runningPanicDefers) != 0 {
 		// Running deferred functions should not take long.
 		for c := 0; c < 1000; c++ {
@@ -216,8 +226,10 @@ func main() {
 	if atomic.Load(&panicking) != 0 {
 		gopark(nil, nil, "panicwait", traceEvGoStop, 1)
 	}
-
+	// 退出程序
 	exit(0)
+	// TODO 为何这里还需要for循环
+	// 下面的for循环一定会导致程序崩掉，这样就确保了程序一定会退出
 	for {
 		var x *int32
 		*x = 0
@@ -445,7 +457,9 @@ func lockedOSThread() bool {
 }
 
 var (
-	allgs    []*g
+	// 存储所有g的数组
+	allgs []*g
+	// 保护allgs的互斥锁
 	allglock mutex
 )
 
@@ -477,11 +491,15 @@ const (
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
+	// 获取当前的G，然后进行race init
+	// TODO: 这里有疑问？在调用schedinit之前应该没有生成G，谈何getg()？
+	// 有的，是g0和m0
 	_g_ := getg()
-	if raceenabled {
+	if raceenabled { // const raceenabled = true
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
 
+	// 设置m的最大值为10000
 	sched.maxmcount = 10000
 
 	tracebackinit()
@@ -1484,6 +1502,7 @@ type cgothreadstart struct {
 // isn't because it borrows _p_.
 //
 //go:yeswritebarrierrec
+// 分配一个m，且不关联任何一个os thread
 func allocm(_p_ *p, fn func()) *m {
 	_g_ := getg()
 	_g_.m.locks++ // disable GC because it can be called from sysmon
@@ -1826,8 +1845,11 @@ var newmHandoff struct {
 // fn needs to be static and not a heap allocated closure.
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
+// 创建一个新的m，它将从fn或者调度程序开始
 func newm(fn func(), _p_ *p) {
+	// 根据fn和p分配一个新的m对象
 	mp := allocm(_p_, fn)
+	// 设置当前m的下一个p为_p_
 	mp.nextp.set(_p_)
 	mp.sigmask = initSigmask
 	if gp := getg(); gp != nil && gp.m != nil && (gp.m.lockedExt != 0 || gp.m.incgo) && GOOS != "plan9" {
@@ -1859,6 +1881,7 @@ func newm(fn func(), _p_ *p) {
 }
 
 func newm1(mp *m) {
+	// 对cgo的处理
 	if iscgo {
 		var ts cgothreadstart
 		if _cgo_thread_start == nil {
@@ -1876,6 +1899,7 @@ func newm1(mp *m) {
 		return
 	}
 	execLock.rlock() // Prevent process clone.
+	// 创建一个系统线程
 	newosproc(mp, unsafe.Pointer(mp.g0.stack.hi))
 	execLock.runlock()
 }
@@ -3217,6 +3241,7 @@ func syscall_runtime_AfterExec() {
 }
 
 // Allocate a new g, with a stack big enough for stacksize bytes.
+// 新分配一个g对象，此时g的状态为_Gidle
 func malg(stacksize int32) *g {
 	newg := new(g)
 	if stacksize >= 0 {
@@ -3237,9 +3262,29 @@ func malg(stacksize int32) *g {
 // are available sequentially after &fn; they would not be
 // copied if a stack split occurred.
 //go:nosplit
+// 新建一个goroutine，
+/* 参考go源码阅读笔记
+lower
+			SP +------------+
+			   |			|
+^              +------------+  <----  newproc frame
+. 			   |    pc/ip   |
+.              +------------+
+. 			   |    siz 	|
+address		   +------------+ ---+
+. 			   |   add		|	 |
+.              +------------+    |
+. 			   |     x		|	  >fn
+.              +------------+    |
+        	   |	y		|	 |
+higher		   +------------+ ---+
+*/
+// 􏳄 用fn + PtrSize获取第一个参数的地址，也就是argp
+// 用siz - 8 获取pc地址
 func newproc(siz int32, fn *funcval) {
 	argp := add(unsafe.Pointer(&fn), sys.PtrSize)
 	pc := getcallerpc()
+	// 用g0的栈创建G对象
 	systemstack(func() {
 		newproc1(fn, (*uint8)(argp), siz, pc)
 	})
@@ -3248,6 +3293,7 @@ func newproc(siz int32, fn *funcval) {
 // Create a new g running fn with narg bytes of arguments starting
 // at argp. callerpc is the address of the go statement that created
 // this. The new g is put on the queue of g's waiting to run.
+// 根据函数参数和函数地址，创建一个新的G，然后将这个G加入队列等待运行
 func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	_g_ := getg()
 
@@ -3263,15 +3309,20 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	// Not worth it: this is almost always an error.
 	// 4*sizeof(uintreg): extra space added below
 	// sizeof(uintreg): caller's LR (arm) or return address (x86, in gostartcall).
+	// 如果函数的参数大小比2048大的话，直接panic
 	if siz >= _StackMin-4*sys.RegSize-sys.RegSize {
 		throw("newproc: function arguments too large for new goroutine")
 	}
 
+	// 从m中获取p
 	_p_ := _g_.m.p.ptr()
+	// 从gfree list获取g
 	newg := gfget(_p_)
+	// 如果没获取到g，则新建一个
 	if newg == nil {
 		newg = malg(_StackMin)
-		casgstatus(newg, _Gidle, _Gdead)
+		casgstatus(newg, _Gidle, _Gdead) //将g的状态改为_Gdead
+		// 添加到allg数组
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
 	}
 	if newg.stack.hi == 0 {
@@ -3293,6 +3344,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		spArg += sys.MinFrameSize
 	}
 	if narg > 0 {
+		// copy参数
 		memmove(unsafe.Pointer(spArg), unsafe.Pointer(argp), uintptr(narg))
 		// This is a stack-to-stack copy. If write barriers
 		// are enabled and the source stack is grey (the
@@ -3324,6 +3376,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		atomic.Xadd(&sched.ngsys, +1)
 	}
 	newg.gcscanvalid = false
+	// 更改当前g的状态为_Grunnable
 	casgstatus(newg, _Gdead, _Grunnable)
 
 	if _p_.goidcache == _p_.goidcacheend {
@@ -3334,6 +3387,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		_p_.goidcache -= _GoidCacheBatch - 1
 		_p_.goidcacheend = _p_.goidcache + _GoidCacheBatch
 	}
+	// 生成唯一的goid
 	newg.goid = int64(_p_.goidcache)
 	_p_.goidcache++
 	if raceenabled {
@@ -3342,8 +3396,10 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
 	}
+	// 将当前新生成的g，放入队列
 	runqput(_p_, newg, true)
 
+	// 如果有空闲的p 且 m没有处于自旋状态 且 main goroutine已经启动，那么唤醒某个m来执行任务
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && mainStarted {
 		wakep()
 	}
@@ -4108,6 +4164,7 @@ func checkdead() {
 	// For -buildmode=c-shared or -buildmode=c-archive it's OK if
 	// there are no running goroutines. The calling program is
 	// assumed to be running.
+	// 如果是编译成c的库，直接返回
 	if islibrary || isarchive {
 		return
 	}
@@ -4187,9 +4244,11 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 // Always runs without a P, so write barriers are not allowed.
 //
 //go:nowritebarrierrec
+// 系统后台监控
 func sysmon() {
 	lock(&sched.lock)
 	sched.nmsys++
+	// 判断程序是否结束
 	checkdead()
 	unlock(&sched.lock)
 
@@ -4197,6 +4256,8 @@ func sysmon() {
 	// we hand it back to the operating system.
 	scavengelimit := int64(5 * 60 * 1e9)
 
+	// 	scavenge: scavenge=1 enables debugging mode of heap scavenger.
+	// 如果设置了scavenge=1，那么开启debugging
 	if debug.scavenge > 0 {
 		// Scavenge-a-lot for testing.
 		forcegcperiod = 10 * 1e6
@@ -4218,6 +4279,7 @@ func sysmon() {
 		if delay > 10*1000 { // up to 10ms
 			delay = 10 * 1000
 		}
+		// 休眠delay us
 		usleep(delay)
 		if debug.schedtrace <= 0 && (sched.gcwaiting != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs)) {
 			lock(&sched.lock)
@@ -4260,6 +4322,7 @@ func sysmon() {
 		// poll network if not polled for more than 10ms
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		now := nanotime()
+		// 获取超过10ms的netpoll结果
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			atomic.Cas64(&sched.lastpoll, uint64(lastpoll), uint64(now))
 			gp := netpoll(false) // non-blocking - returns list of goroutines
@@ -4278,6 +4341,7 @@ func sysmon() {
 		}
 		// retake P's blocked in syscalls
 		// and preempt long running G's
+		// 抢夺阻塞时间长的syscall的G
 		if retake(now) != 0 {
 			idle = 0
 		} else {
@@ -4299,6 +4363,7 @@ func sysmon() {
 		}
 		if debug.schedtrace > 0 && lasttrace+int64(debug.schedtrace)*1000000 <= now {
 			lasttrace = now
+			// scheddetail: setting schedtrace=X and scheddetail=1 causes the scheduler to emit
 			schedtrace(debug.scheddetail > 0)
 		}
 	}
@@ -4671,6 +4736,7 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
+// 将
 func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrand()%2 == 0 {
 		next = false
