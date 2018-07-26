@@ -1,44 +1,35 @@
-# The Go Programming Language
+# 初定方案
 
-Go is an open source programming language that makes it easy to build simple,
-reliable, and efficient software.
+## golang官网
+* [golang.org](https://golang.org)
+* [github.com/golang/go](https://github.com/golang/go)
 
-![Gopher image](doc/gopher/fiveyears.jpg)
-*Gopher image by [Renee French][rf], licensed under [Creative Commons 3.0 Attributions license][cc3-by].*
+## 目标
+理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构
 
-Our canonical Git repository is located at https://go.googlesource.com/go.
-There is a mirror of the repository at https://github.com/golang/go.
+**不是让你写runtime源码，大概理解的就大概理解**
 
-Unless otherwise noted, the Go source files are distributed under the
-BSD-style license found in the LICENSE file.
+## githubg地址
+https://github.com/sheepbao/golang_runtime_reading
 
-### Download and Install
+### 时间
+每周四晚9:00-10:00
 
-#### Binary Distributions
+### golang版本
+go1.10.2
 
-Official binary distributions are available at https://golang.org/dl/.
+### 准备工作
+* 有一台能上网的电脑
+* 安装zoom软件，并注册
+* 装一个阅读golang源码的编译器或者ide，推荐vscode
+* 下载go1.10.2的源码
 
-After downloading a binary release, visit https://golang.org/doc/install
-or load doc/install.html in your web browser for installation
-instructions.
+### 可以先阅读的资料
+* [Goroutine背后的系统知识](http://blog.jobbole.com/35304/)
+* [golang源码剖析-雨痕老师](https://github.com/qyuhen/book)
+* [go-intervals](https://github.com/teh-cmc/go-internals)
+* [也谈goroutine调度器](https://tonybai.com/2017/06/23/an-intro-about-goroutine-scheduler/)
 
-#### Install From Source
-
-If a binary distribution is not available for your combination of
-operating system and architecture, visit
-https://golang.org/doc/install/source or load doc/install-source.html
-in your web browser for source installation instructions.
-
-### Contributing
-
-Go is the work of hundreds of contributors. We appreciate your help!
-
-To contribute, please read the contribution guidelines:
-	https://golang.org/doc/contribute.html
-
-Note that the Go project uses the issue tracker for bug reports and
-proposals only. See https://golang.org/wiki/Questions for a list of
-places to ask questions about the Go language.
-
-[rf]: https://reneefrench.blogspot.com/
-[cc3-by]: https://creativecommons.org/licenses/by/3.0/
+### 活动步骤
+* 线上用zoom共享屏幕，阅读golang runtime源码，一起讨论添加注释，尽量让每个人都理解
+* 提交结果到github
