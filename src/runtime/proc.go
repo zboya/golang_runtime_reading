@@ -162,6 +162,7 @@ func main() {
 	// because nanotime on some platforms depends on startNano.
 	runtimeInitTime = nanotime()
 
+	// gc 启动
 	gcenable()
 
 	main_init_done = make(chan bool)
@@ -186,7 +187,7 @@ func main() {
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
 
-	// 执行init函数
+	// 执行init函数 main_init()
 	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	close(main_init_done)
@@ -195,6 +196,7 @@ func main() {
 	// 到这里的时候解除main g绑定m
 	unlockOSThread()
 
+	// -buildmode=c-archive or c-shared 把go编译成静态或者动态库
 	if isarchive || islibrary {
 		// A program compiled with -buildmode=c-archive or c-shared
 		// has a main, but it is not executed.
@@ -204,6 +206,8 @@ func main() {
 	// 真正的执行main func in package main
 	fn = main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
+
+	// -race
 	if raceenabled {
 		racefini()
 	}
@@ -228,6 +232,7 @@ func main() {
 	}
 	// 退出程序
 	exit(0)
+
 	// TODO 为何这里还需要for循环
 	// 下面的for循环一定会导致程序崩掉，这样就确保了程序一定会退出
 	for {
@@ -1190,9 +1195,11 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 //
 //go:nosplit
 //go:nowritebarrierrec
+// 启动一个M，并且陷入调度中
 func mstart() {
 	_g_ := getg()
 
+	// 检查栈
 	osStack := _g_.stack.lo == 0
 	if osStack {
 		// Initialize stack bounds from system stack.
@@ -1208,6 +1215,7 @@ func mstart() {
 	// both Go and C functions with stack growth prologues.
 	_g_.stackguard0 = _g_.stack.lo + _StackGuard
 	_g_.stackguard1 = _g_.stackguard0
+
 	mstart1(0)
 
 	// Exit this thread.
@@ -1237,10 +1245,12 @@ func mstart1(dummy int32) {
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
+	// 如果当前g的m始m0，执行mstartm0()
 	if _g_.m == &m0 {
 		mstartm0()
 	}
 
+	//
 	if fn := _g_.m.mstartfn; fn != nil {
 		fn()
 	}
@@ -1249,9 +1259,12 @@ func mstart1(dummy int32) {
 		_g_.m.helpgc = 0
 		stopm()
 	} else if _g_.m != &m0 {
+		//
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
+
+	// 进入调度，而且不会在返回
 	schedule()
 }
 
@@ -2506,6 +2519,7 @@ func injectglist(glist *g) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
+// 启动调度，尽力找到可运行的g去运行
 func schedule() {
 	_g_ := getg()
 
@@ -2513,6 +2527,7 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
+	// 处理m已经locked 某个g的情况
 	if _g_.m.lockedg != 0 {
 		stoplockedm()
 		execute(_g_.m.lockedg.ptr(), false) // Never returns.
@@ -2542,9 +2557,13 @@ top:
 			traceGoUnpark(gp, 0)
 		}
 	}
+
+	// gc
 	if gp == nil && gcBlackenEnabled != 0 {
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 	}
+
+	// 以下都是想方设法找到可以运行的g
 	if gp == nil {
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
@@ -2579,6 +2598,7 @@ top:
 		goto top
 	}
 
+	// 真正执行gp
 	execute(gp, inheritTime)
 }
 

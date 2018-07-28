@@ -232,6 +232,7 @@ needtls:
 	JEQ 2(PC)
 	MOVL	AX, 0	// abort
 ok:
+
 	// set the per-goroutine and per-mach "registers"
 	get_tls(BX)
 	LEAQ	runtime·g0(SB), CX
@@ -251,6 +252,7 @@ ok:
 	MOVL	AX, 0(SP)
 	MOVQ	24(SP), AX		// copy argv
 	MOVQ	AX, 8(SP)
+	
 	CALL	runtime·args(SB) // 处理args
 	CALL	runtime·osinit(SB) // os初始化， os_linux.go
 	CALL	runtime·schedinit(SB) // 调度系统初始化, proc.go
@@ -265,6 +267,7 @@ ok:
 	POPQ	AX
 
 	// start this M
+	// 启动线程，并且启动调度系统
 	CALL	runtime·mstart(SB)
 
 	MOVL	$0xf1, 0xf1  // crash
