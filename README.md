@@ -11,6 +11,9 @@
 
 **不是让你写runtime源码，大概理解的就大概理解**
 
+## 微信群
+想一起阅读的小伙伴可以加我微信`sheepbao-520`,加入阅读群
+
 ## githubg地址
 https://github.com/sheepbao/golang_runtime_reading
 
