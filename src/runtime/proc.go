@@ -233,7 +233,7 @@ func main() {
 	// 退出程序
 	exit(0)
 
-	// TODO 为何这里还需要for循环
+	// ? 为何这里还需要for循环？
 	// 下面的for循环一定会导致程序崩掉，这样就确保了程序一定会退出
 	for {
 		var x *int32
@@ -497,8 +497,8 @@ func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
 	// 获取当前的G，然后进行race init
-	// TODO: 这里有疑问？在调用schedinit之前应该没有生成G，谈何getg()？
-	// 有的，是g0和m0
+	// ? 这里有疑问？在调用schedinit之前应该没有生成G，谈何getg()？
+	// 有的，是g0和m0，但这个时候没有p是真的
 	_g_ := getg()
 	if raceenabled { // const raceenabled = true
 		_g_.racectx, raceprocctx0 = raceinit()
@@ -1199,7 +1199,7 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 func mstart() {
 	_g_ := getg()
 
-	// 检查栈
+	// 检查栈边界
 	osStack := _g_.stack.lo == 0
 	if osStack {
 		// Initialize stack bounds from system stack.
@@ -1860,7 +1860,7 @@ var newmHandoff struct {
 //go:nowritebarrierrec
 // 创建一个新的m，它将从fn或者调度程序开始
 func newm(fn func(), _p_ *p) {
-	// 根据fn和p分配一个新的m对象
+	// 根据fn和p和绑定一个m对象
 	mp := allocm(_p_, fn)
 	// 设置当前m的下一个p为_p_
 	mp.nextp.set(_p_)
@@ -1890,6 +1890,7 @@ func newm(fn func(), _p_ *p) {
 		unlock(&newmHandoff.lock)
 		return
 	}
+	// 真正的分配os thread
 	newm1(mp)
 }
 
@@ -2527,7 +2528,7 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
-	// 处理m已经locked 某个g的情况
+	// 处理m已经locked某个g的情况
 	if _g_.m.lockedg != 0 {
 		stoplockedm()
 		execute(_g_.m.lockedg.ptr(), false) // Never returns.
@@ -3299,7 +3300,7 @@ address		   +------------+ ---+
         	   |	y		|	 |
 higher		   +------------+ ---+
 */
-// 􏳄 用fn + PtrSize获取第一个参数的地址，也就是argp
+// 􏳄 用fn + PtrSize 获取第一个参数的地址，也就是argp
 // 用siz - 8 获取pc地址
 func newproc(siz int32, fn *funcval) {
 	argp := add(unsafe.Pointer(&fn), sys.PtrSize)
@@ -3928,16 +3929,20 @@ func setcpuprofilerate(hz int32) {
 // gcworkbufs are not being modified by either the GC or
 // the write barrier code.
 // Returns list of Ps with local work, they need to be scheduled by the caller.
+// 所有的P都在这个函数分配，不管是最开始的初始化分配，还是后期分配
 func procresize(nprocs int32) *p {
 	old := gomaxprocs
+	// 如果 gomaxprocs <=0 抛出异常
 	if old < 0 || nprocs <= 0 {
 		throw("procresize: invalid arg")
 	}
+	// 如果开启trace，记录事件
 	if trace.enabled {
 		traceGomaxprocs(nprocs)
 	}
 
 	// update statistics
+	// 更新全局状态统计
 	now := nanotime()
 	if sched.procresizetime != 0 {
 		sched.totaltime += int64(old) * (now - sched.procresizetime)
@@ -3952,6 +3957,7 @@ func procresize(nprocs int32) *p {
 		if nprocs <= int32(cap(allp)) {
 			allp = allp[:nprocs]
 		} else {
+			// 分配nprocs个*p
 			nallp := make([]*p, nprocs)
 			// Copy everything up to allp's cap so we
 			// never lose old allocated Ps.
@@ -3967,12 +3973,13 @@ func procresize(nprocs int32) *p {
 		if pp == nil {
 			pp = new(p)
 			pp.id = i
-			pp.status = _Pgcstop
-			pp.sudogcache = pp.sudogbuf[:0]
+			pp.status = _Pgcstop            // 更改状态
+			pp.sudogcache = pp.sudogbuf[:0] //将sudogcache指向sudogbuf的起始地址
 			for i := range pp.deferpool {
 				pp.deferpool[i] = pp.deferpoolbuf[i][:0]
 			}
 			pp.wbBuf.reset()
+			// 将pp保存到allp数组里, allp[i] = pp
 			atomicstorep(unsafe.Pointer(&allp[i]), unsafe.Pointer(pp))
 		}
 		if pp.mcache == nil {
@@ -4069,6 +4076,7 @@ func procresize(nprocs int32) *p {
 		_g_.m.p.ptr().status = _Prunning
 	} else {
 		// release the current P and acquire allp[0]
+		// 获取allp[0]
 		if _g_.m.p != 0 {
 			_g_.m.p.ptr().m = 0
 		}
@@ -4077,6 +4085,7 @@ func procresize(nprocs int32) *p {
 		p := allp[0]
 		p.m = 0
 		p.status = _Pidle
+		// 将当前的m和p绑定
 		acquirep(p)
 		if trace.enabled {
 			traceGoStart()
@@ -4089,7 +4098,7 @@ func procresize(nprocs int32) *p {
 			continue
 		}
 		p.status = _Pidle
-		if runqempty(p) {
+		if runqempty(p) { // 将空闲p放入空闲链表
 			pidleput(p)
 		} else {
 			p.m.set(mget())
@@ -4264,7 +4273,8 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 // Always runs without a P, so write barriers are not allowed.
 //
 //go:nowritebarrierrec
-// 系统后台监控
+// 系统后台监控，而且这个函数不符合GPM模型，该函数直接占用一个M，且不需要P
+// 没有任何上下文切换，用不着P
 func sysmon() {
 	lock(&sched.lock)
 	sched.nmsys++

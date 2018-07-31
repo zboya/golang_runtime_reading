@@ -7,13 +7,15 @@
 ## 目标
 理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构
 
+**有任何理解错误的地方，还望指出**
+
 **不是让你写runtime源码，大概理解的就大概理解**
 
 ## githubg地址
 https://github.com/sheepbao/golang_runtime_reading
 
 ### 时间
-每周日晚9:00-10:00
+每周六晚9:00-10:00
 
 ### golang版本
 go1.10.2

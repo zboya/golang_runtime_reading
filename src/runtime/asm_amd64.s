@@ -233,13 +233,16 @@ needtls:
 	MOVL	AX, 0	// abort
 ok:
 
+	// 程序刚启动的时候必定有一个线程启动（主线程）
+	// 将当前的栈和资源保存在g0
+	// 将该线程保存在m0
+	// tls: Thread Local Storage
 	// set the per-goroutine and per-mach "registers"
 	get_tls(BX)
 	LEAQ	runtime·g0(SB), CX
 	MOVQ	CX, g(BX)
 	LEAQ	runtime·m0(SB), AX
 
-	// 创建g0和m0
 	// save m->g0 = g0
 	MOVQ	CX, m_g0(AX)
 	// save m0 to g0->m
