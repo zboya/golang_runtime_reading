@@ -250,6 +250,7 @@ func setMNoWB(mp **m, new *m) {
 	(*muintptr)(unsafe.Pointer(mp)).set(new)
 }
 
+// g 的运行现场
 type gobuf struct {
 	// The offsets of sp, pc, and g are known to (hard-coded in) libmach.
 	//
@@ -282,6 +283,13 @@ type gobuf struct {
 //
 // sudogs are allocated from a special pool. Use acquireSudog and
 // releaseSudog to allocate and free them.
+//
+// sudog 代表在等待列表里的 g，比如向 channel 发送/接收内容时
+// 之所以需要 sudog 是因为 g 和同步对象之间的关系是多对多的
+// 一个 g 可能会在多个等待队列中，所以一个 g 可能被打包为多个 sudog
+// 多个 g 也可以等待在同一个同步对象上
+// 因此对于一个同步对象就会有很多 sudog 了
+// sudog 是从一个特殊的池中进行分配的。用 acquireSudog 和 releaseSudog 来分配和释放 sudog
 type sudog struct {
 	// The following fields are protected by the hchan.lock of the
 	// channel this sudog is blocking on. shrinkstack depends on
@@ -343,6 +351,7 @@ type g struct {
 	// stackguard1 is the stack pointer compared in the C stack growth prologue.
 	// It is stack.lo+StackGuard on g0 and gsignal stacks.
 	// It is ~0 on other goroutine stacks, to trigger a call to morestackc (and crash).
+	// 简单数据结构，lo 和 hi 成员描述了栈的下界和上界内存地址
 	stack       stack   // offset known to runtime/cgo
 	stackguard0 uintptr // offset known to liblink
 	stackguard1 uintptr // offset known to liblink
@@ -400,6 +409,7 @@ type g struct {
 }
 
 type m struct {
+	// 用来执行调度指令的 goroutine
 	g0      *g     // goroutine with scheduling stack
 	morebuf gobuf  // gobuf arg to morestack
 	divmod  uint32 // div/mod denominator for arm - known to liblink

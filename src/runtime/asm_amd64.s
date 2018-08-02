@@ -313,6 +313,7 @@ TEXT runtime·gosave(SB), NOSPLIT, $0-8
 
 // void gogo(Gobuf*)
 // restore state from Gobuf; longjmp
+// 从g0栈切换到G栈，然后JMP到任务函数代码
 TEXT runtime·gogo(SB), NOSPLIT, $16-8
 	MOVQ	buf+0(FP), BX		// gobuf
 	MOVQ	gobuf_g(BX), DX
@@ -327,7 +328,7 @@ TEXT runtime·gogo(SB), NOSPLIT, $16-8
 	MOVQ	$0, gobuf_ret(BX)
 	MOVQ	$0, gobuf_ctxt(BX)
 	MOVQ	$0, gobuf_bp(BX)
-	MOVQ	gobuf_pc(BX), BX
+	MOVQ	gobuf_pc(BX), BX  // 获取G任务函数的地址
 	JMP	BX
 
 // func mcall(fn func(*g))

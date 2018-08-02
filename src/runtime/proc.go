@@ -291,6 +291,8 @@ func goschedguarded() {
 // If unlockf returns false, the goroutine is resumed.
 // unlockf must not access this G's stack, as it may be moved between
 // the call to gopark and the call to unlockf.
+// channel,Go语言的定时器、网络IO操作都会调用gopark。
+// unlockf解锁函数指针，lock Lock指针，reason park的原因
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason string, traceEv byte, traceskip int) {
 	mp := acquirem()
 	gp := mp.curg
@@ -507,12 +509,16 @@ func schedinit() {
 	// 设置m的最大值为10000
 	sched.maxmcount = 10000
 
+	// 栈的一下初始化
 	tracebackinit()
 	moduledataverify()
 	stackinit()
+	// 内存分配起的初始化
 	mallocinit()
 	mcommoninit(_g_.m)
-	alginit()       // maps must not be used before this call
+
+	alginit() // maps must not be used before this call
+	// plugin 相关的初始化
 	modulesinit()   // provides activeModules
 	typelinksinit() // uses maps, activeModules
 	itabsinit()     // uses activeModules
@@ -520,16 +526,25 @@ func schedinit() {
 	msigsave(_g_.m)
 	initSigmask = _g_.m.sigmask
 
+	// 处理命令行
 	goargs()
+	// 处理环境变量
 	goenvs()
+	// 处理一些用于debug的参数
+	// 如： GODEBUG=schedtrace=1000
 	parsedebugvars()
+
+	// gc初始化
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
+	// 确认P的个数
+	// 默认等于cpu个数，可以通过GOMAXPROCS环境变量更改
 	procs := ncpu
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
 	}
+	// 调整P的个数，这里是新分配procs个P
 	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}
@@ -1259,7 +1274,7 @@ func mstart1(dummy int32) {
 		_g_.m.helpgc = 0
 		stopm()
 	} else if _g_.m != &m0 {
-		//
+		// 绑定p
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
@@ -1970,6 +1985,7 @@ func templateThread() {
 
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
+// 停止M，使其休眠，但不会被系统回收
 func stopm() {
 	_g_ := getg()
 
@@ -2629,8 +2645,9 @@ func park_m(gp *g) {
 	if trace.enabled {
 		traceGoPark(_g_.m.waittraceev, _g_.m.waittraceskip)
 	}
-
+	// 设置当前状态从Grunning-->Gwaiting
 	casgstatus(gp, _Grunning, _Gwaiting)
+	// 当前g放弃m
 	dropg()
 
 	if _g_.m.waitunlockf != nil {
@@ -2700,6 +2717,7 @@ func goexit1() {
 	if trace.enabled {
 		traceGoEnd()
 	}
+	// 切换到g0执行goexit0
 	mcall(goexit0)
 }
 
@@ -2743,6 +2761,7 @@ func goexit0(gp *g) {
 		throw("internal lockOSThread error")
 	}
 	_g_.m.lockedExt = 0
+	// 将G放入P的G空闲链表
 	gfput(_g_.m.p.ptr(), gp)
 	if locked {
 		// The goroutine may have locked this thread because
@@ -2755,6 +2774,7 @@ func goexit0(gp *g) {
 			gogo(&_g_.m.g0.sched)
 		}
 	}
+	// 再次计入调度
 	schedule()
 }
 
@@ -3343,7 +3363,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	if newg == nil {
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead) //将g的状态改为_Gdead
-		// 添加到allg数组
+		// 添加到allg数组，防止gc扫描清除掉
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
 	}
 	if newg.stack.hi == 0 {
@@ -3382,9 +3402,11 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		}
 	}
 
+	// 初始化G的gobuf，保存sp，pc，任务函数等
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
+	// 保存goexit的地址到sched.pc
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
@@ -3929,7 +3951,7 @@ func setcpuprofilerate(hz int32) {
 // gcworkbufs are not being modified by either the GC or
 // the write barrier code.
 // Returns list of Ps with local work, they need to be scheduled by the caller.
-// 所有的P都在这个函数分配，不管是最开始的初始化分配，还是后期分配
+// 所有的P都在这个函数分配，不管是最开始的初始化分配，还是后期调整
 func procresize(nprocs int32) *p {
 	old := gomaxprocs
 	// 如果 gomaxprocs <=0 抛出异常
@@ -4071,6 +4093,7 @@ func procresize(nprocs int32) *p {
 	}
 
 	_g_ := getg()
+	// 如果当前的M已经绑定P，继续使用，否则将当前的M绑定一个P
 	if _g_.m.p != 0 && _g_.m.p.ptr().id < nprocs {
 		// continue to use the current P
 		_g_.m.p.ptr().status = _Prunning
@@ -4094,6 +4117,8 @@ func procresize(nprocs int32) *p {
 	var runnablePs *p
 	for i := nprocs - 1; i >= 0; i-- {
 		p := allp[i]
+		// 如果是当前的M绑定的P，不放入P空闲链表
+		// 否则更改P的状态为_Pidle，放入P空闲链表
 		if _g_.m.p.ptr() == p {
 			continue
 		}

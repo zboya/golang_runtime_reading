@@ -167,6 +167,7 @@ type neverCallThisFunction struct{}
 // gentraceback assumes that goexit terminates the stack. A direct
 // call on the stack will cause gentraceback to stop walking the stack
 // prematurely and if there is leftover state it may panic.
+// CALL	runtime·goexit1(SB)	// does not return
 func goexit(neverCallThisFunction)
 
 // Not all cgocallback_gofunc frames are actually cgocallback_gofunc,
