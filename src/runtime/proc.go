@@ -418,6 +418,7 @@ func releaseSudog(s *sudog) {
 // results of this function in any == expression. It is only safe to
 // use the result as an address at which to start executing code.
 //go:nosplit
+// 返回f函数的下一个执行地址
 func funcPC(f interface{}) uintptr {
 	return **(**uintptr)(add(unsafe.Pointer(&f), sys.PtrSize))
 }
@@ -2240,6 +2241,7 @@ func execute(gp *g, inheritTime bool) {
 		setThreadCPUProfiler(hz)
 	}
 
+	// go tool trace
 	if trace.enabled {
 		// GoSysExit has to happen when we have a P, but before GoStart.
 		// So we emit it here.
@@ -4127,6 +4129,7 @@ func procresize(nprocs int32) *p {
 			pidleput(p)
 		} else {
 			p.m.set(mget())
+			// ? 为什么不先runnablePs = p，再p.link.set(runnablePs)，效果应该是一样的
 			p.link.set(runnablePs)
 			runnablePs = p
 		}
@@ -4791,7 +4794,8 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
-// 将
+// 尝试将G放到P的本地队列
+// 如果next==true，将G直接赋值给runnext
 func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrand()%2 == 0 {
 		next = false
@@ -4800,6 +4804,7 @@ func runqput(_p_ *p, gp *g, next bool) {
 	if next {
 	retryNext:
 		oldnext := _p_.runnext
+		// 将G赋值给_p_.runnext
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
 			goto retryNext
 		}
@@ -4813,11 +4818,13 @@ func runqput(_p_ *p, gp *g, next bool) {
 retry:
 	h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
+	// 如果本地队列还有剩余的位置，将G插入本地队列
 	if t-h < uint32(len(_p_.runq)) {
 		_p_.runq[t%uint32(len(_p_.runq))].set(gp)
 		atomic.Store(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
+	// 本地队列已满，放入全局队列
 	if runqputslow(_p_, gp, h, t) {
 		return
 	}
@@ -4827,6 +4834,7 @@ retry:
 
 // Put g and a batch of work from local runnable queue on global queue.
 // Executed only by the owner P.
+// 如果本地满了以后，一次将本地的一半的G转移到全局队列
 func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 	var batch [len(_p_.runq)/2 + 1]*g
 
@@ -4858,6 +4866,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 
 	// Now put the batch on global queue.
 	lock(&sched.lock)
+	// 将拿到的G，添加到全局队列末尾
 	globrunqputbatch(batch[0], batch[n], int32(n+1))
 	unlock(&sched.lock)
 	return true
