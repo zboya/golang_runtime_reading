@@ -4803,6 +4803,8 @@ func runqput(_p_ *p, gp *g, next bool) {
 
 	if next {
 	retryNext:
+		// ? 为何让newg优先运行？
+		// https://go-review.googlesource.com/c/go/+/9289
 		oldnext := _p_.runnext
 		// 将G赋值给_p_.runnext
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {

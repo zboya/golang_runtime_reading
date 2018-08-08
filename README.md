@@ -9,6 +9,7 @@
 理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构
 
 ## 微信群
+![wechat](./wechat.jpeg)  
 想一起阅读的小伙伴可以加我微信`sheepbao-520`,加入阅读群
 
 ## githubg地址
