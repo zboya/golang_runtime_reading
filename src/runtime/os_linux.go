@@ -312,6 +312,7 @@ func gettid() uint32
 
 // Called to initialize a new m (including the bootstrap m).
 // Called on the new thread, cannot allocate memory.
+// 初始化m
 func minit() {
 	minitSignals()
 

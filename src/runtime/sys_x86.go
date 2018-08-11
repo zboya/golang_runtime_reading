@@ -20,7 +20,10 @@ func gostartcall(buf *gobuf, fn, ctxt unsafe.Pointer) {
 		*(*uintptr)(unsafe.Pointer(sp)) = 0
 	}
 	sp -= sys.PtrSize
+	// 讲buf.pc也就是 goexit 入栈
 	*(*uintptr)(unsafe.Pointer(sp)) = buf.pc
+	// 然后再次设置sp和pc，以前在newproc里设置过一次
+	// 这次的pc就是G的任务函数
 	buf.sp = sp
 	buf.pc = uintptr(fn)
 	buf.ctxt = ctxt

@@ -1075,13 +1075,16 @@ func nilfunc() {
 
 // adjust Gobuf as if it executed a call to fn
 // and then did an immediate gosave.
+// 调节go运行现场的调用函数，然后
 func gostartcallfn(gobuf *gobuf, fv *funcval) {
 	var fn unsafe.Pointer
-	if fv != nil {
+	// 判断fv是否为nil
+	if fv != nil { // 不是nil
 		fn = unsafe.Pointer(fv.fn)
-	} else {
+	} else { // 是nil就用nilfunc
 		fn = unsafe.Pointer(funcPC(nilfunc))
 	}
+	// sys_x86.go
 	gostartcall(gobuf, fn, unsafe.Pointer(fv))
 }
 

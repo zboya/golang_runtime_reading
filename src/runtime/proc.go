@@ -496,6 +496,7 @@ const (
 //	call runtime·mstart
 //
 // The new G calls runtime·main.
+// 调度系统的初始化
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
@@ -503,7 +504,8 @@ func schedinit() {
 	// ? 这里有疑问？在调用schedinit之前应该没有生成G，谈何getg()？
 	// 有的，是g0和m0，但这个时候没有p是真的
 	_g_ := getg()
-	if raceenabled { // const raceenabled = true
+	// 检查编译时是否开启了-race
+	if raceenabled {
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
 
@@ -546,6 +548,7 @@ func schedinit() {
 		procs = n
 	}
 	// 调整P的个数，这里是新分配procs个P
+	// 这个函数很重要，所有的P都是从这里分配的，以后也不用担心没有P了
 	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}
@@ -1211,7 +1214,37 @@ func startTheWorldWithSema(emitTraceEvent bool) int64 {
 //
 //go:nosplit
 //go:nowritebarrierrec
-// 启动一个M，并且陷入调度中
+// 启动一个M，并且陷入调度中，这是一切调度的开始，如果要看调度系统，先看schedinit，然后就看这
+// 启动一个M，除了mstart，还有startm这个函数，会按需分配新的m
+// 调度的机制用一句话描述：
+// runtime准备好G,P,M，然后M绑定P，M从各种队列中获取G，切换到G的执行栈上并执行G上的任务函数，调用goexit做清理工作并回到M，如此反复。
+/*
+                            +-------------------- sysmon ---------------//------+
+                            |                                                   |
+                            |                                                   |
+               +---+      +---+-------+                   +--------+          +---+---+
+go func() ---> | G | ---> | P | local | <=== balance ===> | global | <--//--- | P | M |
+               +---+      +---+-------+                   +--------+          +---+---+
+                            |                                 |                 |
+                            |      +---+                      |                 |
+                            +----> | M | <--- findrunnable ---+--- steal <--//--+
+                                   +---+
+                                     |
+                                   mstart
+                                     |
+              +--- execute <----- schedule
+              |                      |
+              |                      |
+              +--> G.fn --> goexit --+
+
+
+              1. go func() 语气创建G。
+              2. 将G放入P的本地队列（或者平衡到全局全局队列）。
+              3. 唤醒或新建M来执行任务。
+              4. 进入调度循环
+              5. 尽力获取可执行的G，并执行
+              6. 清理现场并且重新进入调度循环
+*/
 func mstart() {
 	_g_ := getg()
 
@@ -1244,6 +1277,7 @@ func mstart() {
 	mexit(osStack)
 }
 
+// dummy一直为0，给getcallersp当参数
 func mstart1(dummy int32) {
 	_g_ := getg()
 
@@ -1255,18 +1289,21 @@ func mstart1(dummy int32) {
 	// for terminating the thread.
 	// We're never coming back to mstart1 after we call schedule,
 	// so other calls can reuse the current frame.
+	// 记录mstart1 函数结束后的地址pc和mstart1 函数参数到当前g的运行现场
 	save(getcallerpc(), getcallersp(unsafe.Pointer(&dummy)))
 	asminit()
+	// 初始化m
 	minit()
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
-	// 如果当前g的m始m0，执行mstartm0()
+	// 如果当前g的m是初始m0，执行mstartm0()
 	if _g_.m == &m0 {
+		// 对于初始m，需要一些特殊处理
 		mstartm0()
 	}
 
-	//
+	// 如果有m的起始任务函数，则执行
 	if fn := _g_.m.mstartfn; fn != nil {
 		fn()
 	}
@@ -1292,6 +1329,7 @@ func mstart1(dummy int32) {
 //go:yeswritebarrierrec
 func mstartm0() {
 	// Create an extra M for callbacks on threads not created by Go.
+	// 判断是cgo 且 还没有额外的M，那么新建一个额外的M
 	if iscgo && !cgoHasExtraM {
 		cgoHasExtraM = true
 		newextram()
@@ -2019,6 +2057,7 @@ retry:
 	_g_.m.nextp = 0
 }
 
+// 设置当前g的m为自旋状态
 func mspinning() {
 	// startm's caller incremented nmspinning. Set the new M's spinning.
 	getg().m.spinning = true
@@ -2030,6 +2069,8 @@ func mspinning() {
 // If spinning is set, the caller has incremented nmspinning and startm will
 // either decrement nmspinning or set m.spinning in the newly started M.
 //go:nowritebarrierrec
+// startm是启动一个M，先尝试获取一个空闲P，如果获取不到则返回
+// 获取到P后，在尝试获取M，如果获取不到就新建一个M
 func startm(_p_ *p, spinning bool) {
 	lock(&sched.lock)
 	if _p_ == nil {
@@ -2046,6 +2087,7 @@ func startm(_p_ *p, spinning bool) {
 			return
 		}
 	}
+	//
 	mp := mget()
 	unlock(&sched.lock)
 	if mp == nil {
@@ -2130,6 +2172,8 @@ func handoffp(_p_ *p) {
 
 // Tries to add one more P to execute G's.
 // Called when a G is made runnable (newproc, ready).
+// 尝试获取一个M来运行可运行的G
+//
 func wakep() {
 	// be conservative about spinning threads
 	if !atomic.Cas(&sched.nmspinning, 0, 1) {
@@ -2788,6 +2832,7 @@ func goexit0(gp *g) {
 //
 //go:nosplit
 //go:nowritebarrierrec
+// save是保存pc和sp到当前g的运行现场
 func save(pc, sp uintptr) {
 	_g_ := getg()
 
@@ -3337,6 +3382,7 @@ func newproc(siz int32, fn *funcval) {
 // at argp. callerpc is the address of the go statement that created
 // this. The new g is put on the queue of g's waiting to run.
 // 根据函数参数和函数地址，创建一个新的G，然后将这个G加入队列等待运行
+// callerpc是newproc函数的pc
 func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	_g_ := getg()
 
@@ -3363,6 +3409,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	newg := gfget(_p_)
 	// 如果没获取到g，则新建一个
 	if newg == nil {
+		// 分配栈为_StackMin大小的G对象
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead) //将g的状态改为_Gdead
 		// 添加到allg数组，防止gc扫描清除掉
@@ -3408,11 +3455,14 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
-	// 保存goexit的地址到sched.pc
+	// 保存goexit的地址到sched.pc，pc也就是函数返回后执行的地址，所以goroutine结束后会调用goexit
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
+	// sched.g保存当前新的G
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
+	// gopc保存newproc的pc
 	newg.gopc = callerpc
+	// 任务函数的地址
 	newg.startpc = fn.fn
 	if _g_.m.curg != nil {
 		newg.labels = _g_.m.curg.labels
@@ -4301,8 +4351,9 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 // Always runs without a P, so write barriers are not allowed.
 //
 //go:nowritebarrierrec
-// 系统后台监控，而且这个函数不符合GPM模型，该函数直接占用一个M，且不需要P
-// 没有任何上下文切换，用不着P
+// 系统后台监控，而且这个函数不符合GPM模型，该函数直接占用一个M，且不需要P，没有任何上下文切换，用不着P
+// sysmon中有netpool(获取fd事件), retake(抢占), forcegc(按时间强制执行gc),
+// scavenge heap(释放自由列表中多余的项减少内存占用)等处理.
 func sysmon() {
 	lock(&sched.lock)
 	sched.nmsys++
@@ -4790,7 +4841,7 @@ func runqempty(_p_ *p) bool {
 const randomizeScheduler = raceenabled
 
 // runqput tries to put g on the local runnable queue.
-// If next if false, runqput adds g to the tail of the runnable queue.
+// If next is false, runqput adds g to the tail of the runnable queue.
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
