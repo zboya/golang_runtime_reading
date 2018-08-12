@@ -2269,42 +2269,55 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 //go:yeswritebarrierrec
+// 执行goroutine的任务函数
+// 如果inheritTime=true，那么当前的G继承剩余的时间片，其实就是不让schedtick累加，
+// 这样的话就不会触发每61次从全局队列找G
 func execute(gp *g, inheritTime bool) {
 	_g_ := getg()
 
+	// 更改gp的状态为_Grunning
 	casgstatus(gp, _Grunnable, _Grunning)
+	// 置等待时间为0
 	gp.waitsince = 0
+	// 置可抢占标志为fasle
 	gp.preempt = false
 	gp.stackguard0 = gp.stack.lo + _StackGuard
+	// 如果不是inheritTime，schedtick累加
 	if !inheritTime {
 		_g_.m.p.ptr().schedtick++
 	}
+	// 当前的M的G改为gp
 	_g_.m.curg = gp
+	// gp的M改为当前的M
 	gp.m = _g_.m
 
 	// Check whether the profiler needs to be turned on or off.
 	hz := sched.profilehz
+	// pprof
 	if _g_.m.profilehz != hz {
 		setThreadCPUProfiler(hz)
 	}
 
-	// go tool trace
+	// goroutine trace
 	if trace.enabled {
 		// GoSysExit has to happen when we have a P, but before GoStart.
 		// So we emit it here.
 		if gp.syscallsp != 0 && gp.sysblocktraced {
 			traceGoSysExit(gp.sysexitticks)
 		}
+		// 标记gorutine开始的标志
 		traceGoStart()
 	}
 
+	// gogo由汇编实现
+	// 实现当前的G切换到gp，然后用JMP跳转到G的任务函数
+	// 当任务函数执行完后会调用goexit
 	gogo(&gp.sched)
 }
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from global queue, poll network.
-// 找到一个可以运行的G
-//
+// 找到一个可以运行的G，不找到就不返回了
 func findrunnable() (gp *g, inheritTime bool) {
 	_g_ := getg()
 
@@ -2361,8 +2374,11 @@ top:
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Load64(&sched.lastpoll) != 0 {
 		if gp := netpoll(false); gp != nil { // non-blocking
 			// netpoll returns list of goroutines linked by schedlink.
+			// 如果找到的可运行的网络IO的G列表，则把相关的G插入全局队列
 			injectglist(gp.schedlink.ptr())
+			// 更改G的状态为_Grunnable，以便下次M能找到这些G来执行
 			casgstatus(gp, _Gwaiting, _Grunnable)
+			// goroutine trace事件记录-unpark
 			if trace.enabled {
 				traceGoUnpark(gp, 0)
 			}
@@ -2372,6 +2388,7 @@ top:
 
 	// Steal work from other P's.
 	procs := uint32(gomaxprocs)
+	// 如果其他P都是空闲的，就不从其他P哪里偷取G了
 	if atomic.Load(&sched.npidle) == procs-1 {
 		// Either GOMAXPROCS=1 or everybody, except for us, is idle already.
 		// New work can appear from returning syscall/cgocall, network or timers.
@@ -2569,6 +2586,7 @@ func resetspinning() {
 
 // Injects the list of runnable G's into the scheduler.
 // Can run concurrently with GC.
+// 插入G的list到全局队列
 func injectglist(glist *g) {
 	if glist == nil {
 		return
@@ -2692,6 +2710,8 @@ top:
 // appropriate time. After calling dropg and arranging for gp to be
 // readied later, the caller can do other work but eventually should
 // call schedule to restart the scheduling of goroutines on this m.
+// dropg实现把M和当前G的关联移除
+// 通常调用者将状态Grunning移除的时候会立即调用dropg
 func dropg() {
 	_g_ := getg()
 
@@ -2776,10 +2796,12 @@ func gopreempt_m(gp *g) {
 }
 
 // Finishes execution of the current goroutine.
+// 当goroutine结束后，会调用这个函数
 func goexit1() {
 	if raceenabled {
 		racegoend()
 	}
+	// goroutine trace 结束记录
 	if trace.enabled {
 		traceGoEnd()
 	}
@@ -2791,10 +2813,13 @@ func goexit1() {
 func goexit0(gp *g) {
 	_g_ := getg()
 
+	// gp的状态置为_Gdead
 	casgstatus(gp, _Grunning, _Gdead)
+	// 如果runtime内部goroutine ngsys 减1
 	if isSystemGoroutine(gp) {
 		atomic.Xadd(&sched.ngsys, -1)
 	}
+	// 状态重置
 	gp.m = nil
 	locked := gp.lockedm != 0
 	gp.lockedm = 0
@@ -2820,6 +2845,7 @@ func goexit0(gp *g) {
 	// Note that gp's stack scan is now "valid" because it has no
 	// stack.
 	gp.gcscanvalid = true
+	// 处理G和M的清除工作
 	dropg()
 
 	if _g_.m.lockedInt != 0 {
@@ -4820,6 +4846,7 @@ func pidleput(_p_ *p) {
 	}
 	_p_.link = sched.pidle
 	sched.pidle.set(_p_)
+	// 将sched.npidle加1
 	atomic.Xadd(&sched.npidle, 1) // TODO: fast atomic
 }
 
@@ -4955,6 +4982,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // Executed only by the owner P.
 // 从P的本地队列中获取G
 // 优先获取p runnext，然后是本地列表
+// 如果是是从runnext得到的G，那么inheritTime=true
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
 	for {

@@ -58,11 +58,18 @@ func netpollarm(pd *pollDesc, mode int) {
 
 // polls for ready network connections
 // returns list of goroutines that become runnable
+// 返回可变成可运行的G列表
+// 意思就是当底层epoll有事件通知时，就表示该G是就绪的G
+// 举例：
+// 	一个goroutine因为net io读取阻塞了，此时goroutine会进入Gwaiting状态
+// 	当有一个数据发送给这个goroutine io fd时，如果M执行了netpoll函数，就会获取到这个G
+//  这就是golang实现底层用非阻塞io来实现用户层阻塞io的一部分。
 func netpoll(block bool) *g {
 	if epfd == -1 {
 		return nil
 	}
 	waitms := int32(-1)
+	// 如果是非阻塞的调用，设置waitms = 0
 	if !block {
 		waitms = 0
 	}
@@ -89,6 +96,7 @@ retry:
 		if ev.events&(_EPOLLOUT|_EPOLLHUP|_EPOLLERR) != 0 {
 			mode += 'w'
 		}
+		// mode不等于0，表示有epoll事件通知
 		if mode != 0 {
 			pd := *(**pollDesc)(unsafe.Pointer(&ev.data))
 

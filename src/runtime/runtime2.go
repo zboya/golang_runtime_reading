@@ -612,7 +612,8 @@ type schedt struct {
 	ngsys uint32 // number of system goroutines; updated atomically
 
 	// idle的p
-	pidle  puintptr // idle p's
+	pidle puintptr // idle p's
+	// 有多少个状态为idle的p
 	npidle uint32
 	// 有多少个m正在工作
 	nmspinning uint32 // See "Worker thread parking/unparking" comment in proc.go.
