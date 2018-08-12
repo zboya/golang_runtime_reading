@@ -12,7 +12,7 @@
 ![wechat](./wechat.jpeg)  
 想一起阅读的小伙伴可以加我微信`sheepbao-520`,加入阅读群
 
-## githubg地址
+## github地址
 https://github.com/sheepbao/golang_runtime_reading
 
 ### 时间
@@ -51,3 +51,4 @@ go1.10.2
 
 ### 目前的进度
 * 2018-08-05 已阅读完调度系统的大概源码
+* 正在仔细阅读调度的源码
