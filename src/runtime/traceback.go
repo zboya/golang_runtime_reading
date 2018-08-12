@@ -902,6 +902,7 @@ func topofstack(f funcInfo, g0 bool) bool {
 
 // isSystemGoroutine reports whether the goroutine g must be omitted in
 // stack dumps and deadlock detector.
+// 判断g的任务函数是不是runtime系统的任务函数
 func isSystemGoroutine(gp *g) bool {
 	f := findfunc(gp.startpc)
 	if !f.valid() {

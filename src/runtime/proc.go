@@ -2073,6 +2073,7 @@ func mspinning() {
 // 获取到P后，在尝试获取M，如果获取不到就新建一个M
 func startm(_p_ *p, spinning bool) {
 	lock(&sched.lock)
+	// 如果P为nil，则尝试获取一个空闲P
 	if _p_ == nil {
 		_p_ = pidleget()
 		if _p_ == nil {
@@ -2087,7 +2088,7 @@ func startm(_p_ *p, spinning bool) {
 			return
 		}
 	}
-	//
+	// 获取一个空闲的M
 	mp := mget()
 	unlock(&sched.lock)
 	if mp == nil {
@@ -2096,9 +2097,11 @@ func startm(_p_ *p, spinning bool) {
 			// The caller incremented nmspinning, so set m.spinning in the new M.
 			fn = mspinning
 		}
+		// 如果获取不到，则新建一个
 		newm(fn, _p_)
 		return
 	}
+	// 到这里表示获取到了一个空闲M
 	if mp.spinning {
 		throw("startm: m is spinning")
 	}
@@ -2109,9 +2112,9 @@ func startm(_p_ *p, spinning bool) {
 		throw("startm: p has runnable gs")
 	}
 	// The caller incremented nmspinning, so set m.spinning in the new M.
-	mp.spinning = spinning
-	mp.nextp.set(_p_)
-	notewakeup(&mp.park)
+	mp.spinning = spinning //标记该M正在工作
+	mp.nextp.set(_p_)      // 暂存P
+	notewakeup(&mp.park)   // 唤醒M
 }
 
 // Hands off P from syscall or locked M.
@@ -2173,7 +2176,6 @@ func handoffp(_p_ *p) {
 // Tries to add one more P to execute G's.
 // Called when a G is made runnable (newproc, ready).
 // 尝试获取一个M来运行可运行的G
-//
 func wakep() {
 	// be conservative about spinning threads
 	if !atomic.Cas(&sched.nmspinning, 0, 1) {
@@ -2232,6 +2234,7 @@ func startlockedm(gp *g) {
 
 // Stops the current m for stopTheWorld.
 // Returns when the world is restarted.
+// 为了STW，停止当前的M
 func gcstopm() {
 	_g_ := getg()
 
@@ -2300,6 +2303,8 @@ func execute(gp *g, inheritTime bool) {
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from global queue, poll network.
+// 找到一个可以运行的G
+//
 func findrunnable() (gp *g, inheritTime bool) {
 	_g_ := getg()
 
@@ -2308,7 +2313,9 @@ func findrunnable() (gp *g, inheritTime bool) {
 	// an M.
 
 top:
+	// 当前的P
 	_p_ := _g_.m.p.ptr()
+	// 如果gc正等着运行，停止M，也就是STW
 	if sched.gcwaiting != 0 {
 		gcstopm()
 		goto top
@@ -2316,6 +2323,7 @@ top:
 	if _p_.runSafePointFn != 0 {
 		runSafePointFn()
 	}
+	// fing是执行finalizer的goroutine
 	if fingwait && fingwake {
 		if gp := wakefing(); gp != nil {
 			ready(gp, 0, true)
@@ -2326,11 +2334,13 @@ top:
 	}
 
 	// local runq
+	// 再尝试从本地队列中获取G
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
 	// global runq
+	// 尝试从全局队列中获取G
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2347,6 +2357,7 @@ top:
 	// blocked thread (e.g. it has already returned from netpoll, but does
 	// not set lastpoll yet), this thread will do blocking netpoll below
 	// anyway.
+	// 从网络IO轮询器中找到就绪的G，把这个G变为可运行的G
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Load64(&sched.lastpoll) != 0 {
 		if gp := netpoll(false); gp != nil { // non-blocking
 			// netpoll returns list of goroutines linked by schedlink.
@@ -2377,7 +2388,8 @@ top:
 		_g_.m.spinning = true
 		atomic.Xadd(&sched.nmspinning, 1)
 	}
-	for i := 0; i < 4; i++ {
+	// 从别的P尝试偷取一些G
+	for i := 0; i < 4; i++ { // 尝试四次
 		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() {
 			if sched.gcwaiting != 0 {
 				goto top
@@ -2626,11 +2638,17 @@ top:
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 	}
 
-	// 以下都是想方设法找到可以运行的g
+	// 以下都是想方设法找到可以运行的g，按照一下的顺序
+	// 1. 每隔61次调度轮回从全局队列找
+	// 2. 从p.runnext获取g，从p的本地队列中获取
+	// 3. 尝试从全局队列中获取G
+	// 4. 从网络IO轮询器中找到就绪的G，把这个G变为可运行的G
 	if gp == nil {
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
+		// 每隔61次调度，尝试从全局队列种获取G
+		// ? 为何是61次？
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
 			lock(&sched.lock)
 			gp = globrunqget(_g_.m.p.ptr(), 1)
@@ -2638,12 +2656,14 @@ top:
 		}
 	}
 	if gp == nil {
+		// 从p的本地队列中获取
 		gp, inheritTime = runqget(_g_.m.p.ptr())
 		if gp != nil && _g_.m.spinning {
 			throw("schedule: spinning with local work")
 		}
 	}
 	if gp == nil {
+		// 想尽办法找到可运行的G，直到找到为止
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
 
@@ -3459,6 +3479,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	// sched.g保存当前新的G
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
+	// 将当前的pc压入栈，保存g的任务函数为pc
 	gostartcallfn(&newg.sched, fn)
 	// gopc保存newproc的pc
 	newg.gopc = callerpc
@@ -3467,6 +3488,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	if _g_.m.curg != nil {
 		newg.labels = _g_.m.curg.labels
 	}
+	// 判断g的任务函数是不是runtime系统的任务函数，是则sched.ngsys加1
 	if isSystemGoroutine(newg) {
 		atomic.Xadd(&sched.ngsys, +1)
 	}
@@ -3489,6 +3511,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		newg.racectx = racegostart(callerpc)
 	}
 	if trace.enabled {
+		// 如果启动了go trace，记录go create事件
 		traceGoCreate(newg, newg.startpc)
 	}
 	// 将当前新生成的g，放入队列
@@ -3496,6 +3519,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 
 	// 如果有空闲的p 且 m没有处于自旋状态 且 main goroutine已经启动，那么唤醒某个m来执行任务
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && mainStarted {
+		// 如果还有空闲P，那么新建M来运行G
 		wakep()
 	}
 	_g_.m.locks--
@@ -4929,6 +4953,8 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // If inheritTime is true, gp should inherit the remaining time in the
 // current time slice. Otherwise, it should start a new time slice.
 // Executed only by the owner P.
+// 从P的本地队列中获取G
+// 优先获取p runnext，然后是本地列表
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
 	for {
