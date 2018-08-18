@@ -2025,6 +2025,8 @@ func templateThread() {
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
 // 停止M，使其休眠，但不会被系统回收
+// 调用notesleep使M进入休眠
+// 线程可以处于三种状态: 等待中(Waiting)、待执行(Runnable)或执行中(Executing)。
 func stopm() {
 	_g_ := getg()
 
@@ -2042,6 +2044,7 @@ retry:
 	lock(&sched.lock)
 	mput(_g_.m)
 	unlock(&sched.lock)
+	// 在lock_futex.go 中
 	notesleep(&_g_.m.park)
 	noteclear(&_g_.m.park)
 	if _g_.m.helpgc != 0 {
@@ -2398,9 +2401,13 @@ top:
 	// If number of spinning M's >= number of busy P's, block.
 	// This is necessary to prevent excessive CPU consumption
 	// when GOMAXPROCS>>1 but the program parallelism is low.
+	//
+	// 如果当前的M没在工作 且 正在工作的M数量大于等于正在使用的P的数量，那么block
+	// 当GOMAXPROCS远大于1，但程序并行度低时，防止过多的CPU消耗。
 	if !_g_.m.spinning && 2*atomic.Load(&sched.nmspinning) >= procs-atomic.Load(&sched.npidle) {
 		goto stop
 	}
+	// 如果M为非自旋，那么设置为自旋状态
 	if !_g_.m.spinning {
 		_g_.m.spinning = true
 		atomic.Xadd(&sched.nmspinning, 1)
@@ -2412,6 +2419,7 @@ top:
 				goto top
 			}
 			stealRunNextG := i > 2 // first look for ready queues with more than 1 g
+			// 从allp[enum.position()]偷去一半的G，并返回其中的一个
 			if gp := runqsteal(_p_, allp[enum.position()], stealRunNextG); gp != nil {
 				return gp, false
 			}
@@ -2423,6 +2431,7 @@ stop:
 	// We have nothing to do. If we're in the GC mark phase, can
 	// safely scan and blacken objects, and have work to do, run
 	// idle-time marking rather than give up the P.
+	// 关于gc的处理，暂时不分析
 	if gcBlackenEnabled != 0 && _p_.gcBgMarkWorker != 0 && gcMarkWorkAvailable(_p_) {
 		_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode
 		gp := _p_.gcBgMarkWorker.ptr()
@@ -2445,11 +2454,13 @@ stop:
 		unlock(&sched.lock)
 		goto top
 	}
+	// 再次从全局队列中获取G
 	if sched.runqsize != 0 {
 		gp := globrunqget(_p_, 0)
 		unlock(&sched.lock)
 		return gp, false
 	}
+	// 释放当前的P
 	if releasep() != _p_ {
 		throw("findrunnable: wrong p")
 	}
@@ -2470,6 +2481,7 @@ stop:
 	// the system is fully loaded so no spinning threads are required.
 	// Also see "Worker thread parking/unparking" comment at the top of the file.
 	wasSpinning := _g_.m.spinning
+	// M取消自旋状态
 	if _g_.m.spinning {
 		_g_.m.spinning = false
 		if int32(atomic.Xadd(&sched.nmspinning, -1)) < 0 {
@@ -2478,6 +2490,7 @@ stop:
 	}
 
 	// check all runqueues once again
+	// 再次检查所有的P，有没有可以运行的G
 	for _, _p_ := range allpSnapshot {
 		if !runqempty(_p_) {
 			lock(&sched.lock)
@@ -2516,6 +2529,7 @@ stop:
 	}
 
 	// poll network
+	// 再次检查netpoll
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Xchg64(&sched.lastpoll, 0) != 0 {
 		if _g_.m.p != 0 {
 			throw("findrunnable: netpoll with p")
@@ -2541,6 +2555,7 @@ stop:
 			injectglist(gp)
 		}
 	}
+	// 实在找不到G，那就休眠吧
 	stopm()
 	goto top
 }
@@ -4246,6 +4261,7 @@ func procresize(nprocs int32) *p {
 // isn't because it immediately acquires _p_.
 //
 //go:yeswritebarrierrec
+// 将当前的M和p绑定
 func acquirep(_p_ *p) {
 	// Do the part that isn't allowed to have write barriers.
 	acquirep1(_p_)
@@ -4741,6 +4757,7 @@ func schedtrace(detailed bool) {
 // Sched must be locked.
 // May run during STW, so write barriers are not allowed.
 //go:nowritebarrierrec
+// 把mp添加到midle列表
 func mput(mp *m) {
 	mp.schedlink = sched.midle
 	sched.midle.set(mp)
@@ -4840,6 +4857,7 @@ func globrunqget(_p_ *p, max int32) *g {
 // Sched must be locked.
 // May run during STW, so write barriers are not allowed.
 //go:nowritebarrierrec
+// 将P放入空闲P列表，并将sched.npidle加1
 func pidleput(_p_ *p) {
 	if !runqempty(_p_) {
 		throw("pidleput: P has non-empty run queue")
@@ -4854,6 +4872,7 @@ func pidleput(_p_ *p) {
 // Sched must be locked.
 // May run during STW, so write barriers are not allowed.
 //go:nowritebarrierrec
+// 从空闲P列表获取一个P，并将sched.npidle减1
 func pidleget() *p {
 	_p_ := sched.pidle.ptr()
 	if _p_ != nil {
@@ -5067,6 +5086,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 // Steal half of elements from local runnable queue of p2
 // and put onto local runnable queue of p.
 // Returns one of the stolen elements (or nil if failed).
+// 从p2哪里偷一半的G放到p上
 func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 	t := _p_.runqtail
 	n := runqgrab(p2, &_p_.runq, t, stealRunNextG)
