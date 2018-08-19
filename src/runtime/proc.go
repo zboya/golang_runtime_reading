@@ -4821,30 +4821,40 @@ func globrunqputbatch(ghead *g, gtail *g, n int32) {
 
 // Try get a batch of G's from the global runnable queue.
 // Sched must be locked.
+// 由findrunnable调用，尝试从全局队列中取出一个G
+// 并且转移一批G到P的本地队列，这样可以减少对全局队列的操作
+// 也就减少了全局队列锁的操作
 func globrunqget(_p_ *p, max int32) *g {
+	// 如果全局队列的长度为0，直接返回
 	if sched.runqsize == 0 {
 		return nil
 	}
 
+	// 将全局队列任务等分， n=（G的个数）/（P的个数）+ 1
 	n := sched.runqsize/gomaxprocs + 1
 	if n > sched.runqsize {
 		n = sched.runqsize
 	}
+	// 如果指定了max（max大于0表示指定了），n=max
 	if max > 0 && n > max {
 		n = max
 	}
+	// n不能超过p runq的一半，也就是不能超过128
 	if n > int32(len(_p_.runq))/2 {
 		n = int32(len(_p_.runq)) / 2
 	}
 
+	// 调整sched.runqsize的大小
 	sched.runqsize -= n
 	if sched.runqsize == 0 {
 		sched.runqtail = 0
 	}
 
+	// 获取全局队列的头部的G，并在后面返回
 	gp := sched.runqhead.ptr()
 	sched.runqhead = gp.schedlink
 	n--
+	// 批量将n-1个全局队列中的G，放到P中
 	for ; n > 0; n-- {
 		gp1 := sched.runqhead.ptr()
 		sched.runqhead = gp1.schedlink
