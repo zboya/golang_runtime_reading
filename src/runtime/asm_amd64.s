@@ -84,6 +84,32 @@ GLOBL _rt0_amd64_lib_argc<>(SB),NOPTR, $8
 DATA _rt0_amd64_lib_argv<>(SB)/8, $0
 GLOBL _rt0_amd64_lib_argv<>(SB),NOPTR, $8
 
+/*
+go程序的入口点是runtime.rt0_go, 流程是:
+
+分配栈空间, 需要2个本地变量+2个函数参数, 然后向8对齐
+把传入的argc和argv保存到栈上
+更新g0中的stackguard的值, stackguard用于检测栈空间是否不足, 需要分配新的栈空间
+获取当前cpu的信息并保存到各个全局变量
+调用_cgo_init如果函数存在
+初始化当前线程的TLS, 设置FS寄存器为m0.tls+8(获取时会-8)
+测试TLS是否工作
+设置g0到TLS中, 表示当前的g是g0
+设置m0.g0 = g0
+设置g0.m = m0
+调用runtime.check做一些检查
+调用runtime.args保存传入的argc和argv到全局变量
+调用runtime.osinit根据系统执行不同的初始化
+这里(linux x64)设置了全局变量ncpu等于cpu核心数量
+调用runtime.schedinit执行共同的初始化
+这里的处理比较多, 会初始化栈空间分配器, GC, 按cpu核心数量或GOMAXPROCS的值生成P等
+生成P的处理在procresize中
+调用runtime.newproc创建一个新的goroutine, 指向的是runtime.main
+runtime.newproc这个函数在创建普通的goroutine时也会使用, 在下面的"go的实现"中会详细讲解
+调用runtime·mstart启动m0
+启动后m0会不断从运行队列获取G并运行, runtime.mstart调用后不会返回
+*/
+
 TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	// 处理arg
 	// copy arguments forward on an even stack

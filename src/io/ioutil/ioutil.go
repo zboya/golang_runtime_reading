@@ -8,6 +8,7 @@ package ioutil
 import (
 	"bytes"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"sync"
@@ -16,6 +17,7 @@ import (
 // readAll reads from r until an error or EOF and returns the data it read
 // from the internal buffer allocated with a specified capacity.
 func readAll(r io.Reader, capacity int64) (b []byte, err error) {
+	log.Println("read all")
 	var buf bytes.Buffer
 	// If the buffer overflows, we will get bytes.ErrTooLarge.
 	// Return that as an error. Any other panic remains.
