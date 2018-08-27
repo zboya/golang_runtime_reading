@@ -217,6 +217,15 @@ func setGNoWB(gp **g, new *g) {
 	(*guintptr)(unsafe.Pointer(gp)).set(new)
 }
 
+// 用二级指针操作单向链表
+//
+/*
+	+-------+			+-------+
+	|   p   |<-----+	|   p   |<------ sched.pidle
+	+-------+	   |	+-------+
+	| link  |	   +----| link  |
+	+-------+			+-------+
+*/
 type puintptr uintptr
 
 //go:nosplit
@@ -445,7 +454,7 @@ type m struct {
 	dying      int32
 	profilehz  int32
 	helpgc     int32
-	// 是否自旋，自旋就表示正在工作
+	// 是否自旋，自旋就表示M正在找G来运行
 	spinning bool // m is out of work and is actively looking for work
 	// m是否被阻塞
 	blocked bool // m is blocked on a note
@@ -507,7 +516,8 @@ type p struct {
 	// id也是allp的数组下标
 	id     int32
 	status uint32 // one of pidle/prunning/...
-	link   puintptr
+	// 单向链表，指向下一个P的地址
+	link puintptr
 	// 每调度一次加1
 	schedtick uint32 // incremented on every scheduler call
 	// 每一次系统调用加1
@@ -611,11 +621,11 @@ type schedt struct {
 	// 系统中goroutine的数目，会自动更新
 	ngsys uint32 // number of system goroutines; updated atomically
 
-	// idle的p
+	// idle的p列表
 	pidle puintptr // idle p's
 	// 有多少个状态为idle的p
 	npidle uint32
-	// 有多少个m正在工作
+	// 有多少个m自旋
 	nmspinning uint32 // See "Worker thread parking/unparking" comment in proc.go.
 
 	// Global runnable queue.
