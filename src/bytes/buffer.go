@@ -9,7 +9,6 @@ package bytes
 import (
 	"errors"
 	"io"
-	"log"
 	"unicode/utf8"
 )
 
@@ -200,21 +199,17 @@ const MinRead = 512
 // error except io.EOF encountered during the read is also returned. If the
 // buffer becomes too large, ReadFrom will panic with ErrTooLarge.
 func (b *Buffer) ReadFrom(r io.Reader) (n int64, err error) {
-	log.Println("read from")
 	b.lastRead = opInvalid
 	for {
 		i := b.grow(MinRead)
-		log.Println("read data", i, cap(b.buf))
 		m, e := r.Read(b.buf[i:cap(b.buf)])
 		if m < 0 {
 			panic(errNegativeRead)
 		}
-		log.Println("read ", m, e)
 
 		b.buf = b.buf[:i+m]
 		n += int64(m)
 		if e == io.EOF {
-			log.Println("read eof")
 			return n, nil // e is EOF, so return nil explicitly
 		}
 		if e != nil {
