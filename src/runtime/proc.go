@@ -551,6 +551,7 @@ const (
 //
 // The new G calls runtime·main.
 // 调度系统的初始化
+// 也包含了gc的初始化
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
@@ -2154,22 +2155,23 @@ func startm(_p_ *p, spinning bool) {
 			// The caller incremented nmspinning, so set m.spinning in the new M.
 			fn = mspinning
 		}
-		// 如果获取不到，则新建一个
+		// 如果获取不到，则新建一个，新建完成后就立即返回
 		newm(fn, _p_)
 		return
 	}
+
 	// 到这里表示获取到了一个空闲M
-	if mp.spinning {
+	if mp.spinning { // 从midle中获取的mp，不应该是spinning状态，获取的都是经过stopm的，stopm之前都会推出spinning
 		throw("startm: m is spinning")
 	}
-	if mp.nextp != 0 {
+	if mp.nextp != 0 { // 这个位置是要留给参数_p_的，stopm中如果被唤醒，则关联nextp和m
 		throw("startm: m has p")
 	}
-	if spinning && !runqempty(_p_) {
+	if spinning && !runqempty(_p_) { // spinning状态的M是在本地和全局都获取不到工作的情况，不能与spinning语义矛盾
 		throw("startm: p has runnable gs")
 	}
 	// The caller incremented nmspinning, so set m.spinning in the new M.
-	mp.spinning = spinning //标记该M正在工作
+	mp.spinning = spinning //标记该M是否在自旋
 	mp.nextp.set(_p_)      // 暂存P
 	notewakeup(&mp.park)   // 唤醒M
 }
@@ -2235,6 +2237,8 @@ func handoffp(_p_ *p) {
 // 尝试获取一个M来运行可运行的G
 func wakep() {
 	// be conservative about spinning threads
+	// 如果有其他的M处于自旋状态，那么就不管了，直接返回
+	// 因为自旋的M回拼命找G来运行的，就不新找一个M（劳动者）来运行了。
 	if !atomic.Cas(&sched.nmspinning, 0, 1) {
 		return
 	}
@@ -2243,19 +2247,24 @@ func wakep() {
 
 // Stops execution of the current m that is locked to a g until the g is runnable again.
 // Returns with acquired P.
+// 释放P，并且让M进入休眠，等待被唤醒
 func stoplockedm() {
 	_g_ := getg()
 
 	if _g_.m.lockedg == 0 || _g_.m.lockedg.ptr().lockedm.ptr() != _g_.m {
 		throw("stoplockedm: inconsistent locking")
 	}
+
+	// 如果M绑定了P，那么释放P
 	if _g_.m.p != 0 {
 		// Schedule another M to run this p.
 		_p_ := releasep()
 		handoffp(_p_)
 	}
 	incidlelocked(1)
+
 	// Wait until another thread schedules lockedg again.
+	// M休眠直到被唤醒
 	notesleep(&_g_.m.park)
 	noteclear(&_g_.m.park)
 	status := readgstatus(_g_.m.lockedg.ptr())
@@ -2264,6 +2273,7 @@ func stoplockedm() {
 		dumpgstatus(_g_)
 		throw("stoplockedm: not runnable")
 	}
+
 	acquirep(_g_.m.nextp.ptr())
 	_g_.m.nextp = 0
 }
@@ -2271,6 +2281,7 @@ func stoplockedm() {
 // Schedules the locked m to run the locked gp.
 // May run during STW, so write barriers are not allowed.
 //go:nowritebarrierrec
+// 唤醒gp的lockedm，然后让当前的M休眠
 func startlockedm(gp *g) {
 	_g_ := getg()
 
@@ -2283,9 +2294,12 @@ func startlockedm(gp *g) {
 	}
 	// directly handoff current P to the locked m
 	incidlelocked(-1)
+	// 分配p
 	_p_ := releasep()
 	mp.nextp.set(_p_)
+	// 唤醒gp的lockedm
 	notewakeup(&mp.park)
+	// 让当前的M休眠
 	stopm()
 }
 
@@ -2456,7 +2470,7 @@ top:
 	// This is necessary to prevent excessive CPU consumption
 	// when GOMAXPROCS>>1 but the program parallelism is low.
 	//
-	// 如果当前的M没在工作 且 正在工作的M数量大于等于正在使用的P的数量，那么block
+	// 如果当前的M没在自旋 且 正在自旋的M数量大于等于正在使用的P的数量，那么block
 	// 当GOMAXPROCS远大于1，但程序并行度低时，防止过多的CPU消耗。
 	if !_g_.m.spinning && 2*atomic.Load(&sched.nmspinning) >= procs-atomic.Load(&sched.npidle) {
 		goto stop
@@ -2543,7 +2557,7 @@ stop:
 	// 如果我们反过来这样做，另一个线程可以在我们检查所有运行队列之后但在我们放弃nmspinning之前提交goroutine;
 	// 因此，没有人会取消一个线程来运行goroutine。 如果我们发现下面的新工作，我们需要恢复m.spinning作为重置的信号，
 	// 以取消park新的工作线程（因为可能有多个饥饿的goroutine）。 但是，如果在发现新工作后我们也观察到没有空闲Ps
-	// ，可以暂停当前线程：系统已满载，因此不需要旋转线程。 另请参阅文件顶部的“工人线程park/取消park”注释。
+	// ，可以暂停当前线程：系统已满载，因此不需要线程自旋。 另请参阅文件顶部的“工作线程park/unparking”注释。
 	wasSpinning := _g_.m.spinning
 	// M取消自旋状态
 	if _g_.m.spinning {
@@ -2625,6 +2639,7 @@ stop:
 		}
 	}
 	// 实在找不到G，那就休眠吧
+	// 且此时的M一定不是自旋状态
 	stopm()
 	goto top
 }
@@ -2650,7 +2665,7 @@ func pollWork() bool {
 	return false
 }
 
-// 重置m的spinning为false
+// 重置m的为非自旋状态
 // 唤醒或新建一个M来执行
 func resetspinning() {
 	_g_ := getg()
@@ -2658,6 +2673,7 @@ func resetspinning() {
 		throw("resetspinning: not a spinning m")
 	}
 	_g_.m.spinning = false
+	// 将自旋的M个数减一
 	nmspinning := atomic.Xadd(&sched.nmspinning, -1)
 	if int32(nmspinning) < 0 {
 		throw("findrunnable: negative nmspinning")
@@ -2666,6 +2682,8 @@ func resetspinning() {
 	// need to wakeup another P here. See "Worker thread parking/unparking"
 	// comment at the top of the file for details.
 	// 如果当前有空闲的P, 但是无自旋的M(nmspinning等于0), 则唤醒或新建一个M
+	// 意思就是当前其他M要么很忙，要么在睡大觉，而且P有剩余，那么如果有睡大觉的M
+	// 则唤醒它，没有的话就新建一个
 	if nmspinning == 0 && atomic.Load(&sched.npidle) > 0 {
 		wakep()
 	}
@@ -2712,9 +2730,12 @@ func schedule() {
 		throw("schedule: holding locks")
 	}
 
-	// 处理m已经locked某个g的情况
+	// 如果当前M锁定了某个G，那么应该交出P，进入休眠
+	// 等待某个M调度拿到lockedg，然后唤醒lockedg的M
+	// 具体看 startlockedm
 	if _g_.m.lockedg != 0 {
 		stoplockedm()
+		// 执行M锁定的G，表示M和G锁定后，这个M就一直运行，直到lockedg退出
 		execute(_g_.m.lockedg.ptr(), false) // Never returns.
 	}
 
@@ -2788,13 +2809,17 @@ top:
 	// start a new spinning M.
 	// M即将要执行G，如果M还是spinning，那么重置为false
 	if _g_.m.spinning {
+		// 重置为非自旋，并根据需要唤醒或新建一个M来运行
 		resetspinning()
 	}
 
+	// 如果找到的G已经锁定M了，dolockOSThread和cgo会将G和M绑定
+	// 则用startlockedm执行，将P和G都交给对方lockedm，唤醒绑定M-lockedm，自己回空闲队列。
 	if gp.lockedm != 0 {
 		// Hands off own p to the locked m,
 		// then blocks waiting for a new p.
 		startlockedm(gp)
+		// 唤醒后回到头部重新获取任务。
 		goto top
 	}
 
@@ -2809,6 +2834,12 @@ top:
 // appropriate time. After calling dropg and arranging for gp to be
 // readied later, the caller can do other work but eventually should
 // call schedule to restart the scheduling of goroutines on this m.
+// dropg删除m与当前goroutine m-> curg（简称gp）之间的关联。
+// 通常，调用者将gp的状态设置为远离Grunning，然后立即调用dropg完成作业。
+// 调用者还负责安排gp将在适当的时间使用ready重新启动。
+// 在调用dropg并安排gp稍后准备好之后，调用者可以做其他工作，
+// 但最终应调用schedule来重新启动此m上的goroutine的调度。
+//
 // dropg实现把M和当前G的关联移除
 // 通常调用者将状态Grunning移除的时候会立即调用dropg
 func dropg() {
@@ -2824,6 +2855,7 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 }
 
 // park continuation on g0.
+// 让G休眠
 func park_m(gp *g) {
 	_g_ := getg()
 
@@ -2920,9 +2952,12 @@ func goexit0(gp *g) {
 	}
 	// 状态重置
 	gp.m = nil
+	// G和M是否锁定
 	locked := gp.lockedm != 0
+	// G和M解除锁定
 	gp.lockedm = 0
 	_g_.m.lockedg = 0
+
 	gp.paniconfault = false
 	gp._defer = nil // should be true already but just in case.
 	gp._panic = nil // non-nil for Goexit during panic. points at stack-allocated data.
@@ -3031,6 +3066,29 @@ func save(pc, sp uintptr) {
 // because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
 //
 //go:nosplit
+//
+// goroutine g即将进入系统调用。记录它不再使用cpu。
+// 这只是来自go syscall库和cgocall，而不是来自运行时使用的低级系统调用.
+// Entersyscall无法拆分堆栈：gosave mustmake g-> sched指的是调用者的堆栈段，
+// 因为aftercysyscall将立即返回。没有任何enteryscall调用可以拆分堆栈。
+// 我们无法安全地移动堆栈在系统调用的活动期间，
+// 因为我们不知道哪个uintptr参数实际上是指针（回到堆栈中）。
+// 实际上，这意味着我们通过快速路径运行来执行无拆分事务，
+// 慢速路径必须使用systemstack在系统堆栈上运行更大的东西.
+// reentersyscall是cgo回调使用的入口点，其中明确保存的SP和PC已恢复。
+// 当从调用堆栈中的函数调用exitsyscall而不是父函数时，需要这样做，
+// 因为g-> syscallspmust总是指向有效的堆栈帧。
+// 下面的enteryscall是系统调用的normalentry点，
+// 它从调用者获取SP和PC.Syscall跟踪：在系统调用开始时，
+// 我们发出traceGoSysCall来捕获堆栈跟踪。
+// 如果系统调用没有阻塞，就是它，我们这样做不发出任何其他事件。
+// 如果系统调用块（即重新获得P），则重新发出traceGoSysBlock;当syscall返回时，
+// 我们发出traceGoSysExit，当goroutine开始运行时（可能立即，如果exitsyscallfast返回true），
+// 我们发出traceGoStart.To确保traceGoSysExit是在traceGoSysBlock之后严格发出的，
+// 我们记得m中的syscalltick的当前值（_g_.m.syscalltick = _g_.mpptr（）。
+// syscalltick），之后发出traceGoSysBlock的人会增加p.
+// syscalltick;我们等待发送之前的增量traceGoSysExit。
+// 请注意，即使未启用跟踪，也会完成增量，因为可以在系统调用中启用跟踪。我们不希望等待挂起。
 func reentersyscall(pc, sp uintptr) {
 	_g_ := getg()
 
@@ -3767,6 +3825,9 @@ func Breakpoint() {
 // after they modify m.locked. Do not allow preemption during this call,
 // or else the m might be different in this function than in the caller.
 //go:nosplit
+// 将当前的G和M进行互相绑定
+// M的lockedg保存G
+// G的lockedm保存M
 func dolockOSThread() {
 	_g_ := getg()
 	_g_.m.lockedg.set(_g_)
@@ -4955,11 +5016,11 @@ func globrunqget(_p_ *p, max int32) *g {
 //go:nowritebarrierrec
 // 将P放入空闲P列表，并将sched.npidle加1
 /*
-	+-------+			+-------+
-	|   p   |<-----+	|   p   |<------ sched.pidle
-	+-------+	   |	+-------+
-	| link  |	   +----| link  |
-	+-------+			+-------+
+	+-------+           +-------+
+	|   p   |<-----+    |   p   |<------ pidleList
+	+-------+      |    +-------+
+	| link  |      +----| link  |
+	+-------+           +-------+
 */
 func pidleput(_p_ *p) {
 	if !runqempty(_p_) {
