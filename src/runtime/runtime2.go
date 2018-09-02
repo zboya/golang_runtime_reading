@@ -220,11 +220,12 @@ func setGNoWB(gp **g, new *g) {
 // 用二级指针操作单向链表
 //
 /*
-	+-------+			+-------+
-	|   p   |<-----+	|   p   |<------ sched.pidle
-	+-------+	   |	+-------+
-	| link  |	   +----| link  |
-	+-------+			+-------+
+        p1                 p2
+	+-------+           +-------+
+	|   id  |<-----+    |   id  |<------ pidleList
+	+-------+      |    +-------+
+	| link  |      +----| link  |
+	+-------+           +-------+
 */
 type puintptr uintptr
 
@@ -480,7 +481,7 @@ type m struct {
 	schedlink muintptr
 	// 当前m的内存缓存
 	mcache *mcache
-	// 锁定g在当前m上执行，而不会切换到其他m
+	// 锁定g在当前m上执行，而不会切换到其他m，一般cgo调用或者手动调用LockOSThread()才会有值
 	lockedg guintptr
 	// thread创建的栈
 	createstack   [32]uintptr    // stack that created this thread.
