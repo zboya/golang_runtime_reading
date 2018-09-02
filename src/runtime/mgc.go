@@ -173,6 +173,7 @@ const defaultHeapMinimum = 4 << 20
 // Initialized from $GOGC.  GOGC=off means no GC.
 var gcpercent int32
 
+// gc的初始化
 func gcinit() {
 	if unsafe.Sizeof(workbuf{}) != _WorkbufSize {
 		throw("size of Workbuf is suboptimal")
@@ -197,6 +198,8 @@ func gcinit() {
 	work.markDoneSema = 1
 }
 
+// 读取GOGC环境变量的值
+// GOGC = "off",表示关闭GC
 func readgogc() int32 {
 	p := gogetenv("GOGC")
 	if p == "off" {

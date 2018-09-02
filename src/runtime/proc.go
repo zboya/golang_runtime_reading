@@ -551,6 +551,7 @@ const (
 //
 // The new G calls runtime·main.
 // 调度系统的初始化
+// 也包含了gc的初始化
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
