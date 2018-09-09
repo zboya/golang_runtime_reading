@@ -89,6 +89,49 @@
 // 6. When sufficient allocation has taken place, replay the sequence
 // starting with 1 above. See discussion of GC rate below.
 
+// 垃圾收集器（GC）
+// GC与mutator线程并发运行，类型准确（也称为精确），
+// 允许多个GC线程并行运行。它是一个使用写屏障的并发标记和扫描。
+// 它是非分代和非紧凑的。使用每个P分配区域分离的大小来完成分配以最小化分段，
+// 并发在常见情况下消除锁定。该算法分解为几个步骤。这是对所使用的算法的高级描述。
+
+// 关于GC的概述，理查德琼斯的gchandbook.org是一个很好的起点。
+// 算法的知识遗产包括Dijkstra的即时算法，参见W. Dijkstra, Leslie Lamport, A. J. Martin, C. S. Scholten, and E. F. M. Steffens. 1978.
+// On-the-fly garbage collection: an exercise in cooperation. Commun. ACM 21, 11 (November 1978) 966-975.
+// 对于期刊质量证明这些步骤是完整的正确的，看Hudson，R 和Moss，J.E.B。
+// 复制垃圾收集而不停止世界。并行和计算：实践和经验15（3-5），2003。
+
+// 1. GC执行清除终止。
+// 	b. 清除任何未清除的spans。如果在预期时间之前强制执行此GC循环，则只会出现未清除的spans。
+// 	a. STW，可以导致所有Ps达到GC安全点。
+
+// 2. GC执行“标记1”子阶段。在此子阶段中，允许Ps本地缓存工作队列的部分。
+// 	a. 通过将gcphase设置为_GCmark（来自_GCoff），启用写屏障，
+// 启用mutator协助以及将根标记作业排入队列来准备标记阶段。
+// 在所有Ps启用写屏障之前，不会扫描任何对象，这是使用STW完成的。
+//  b. 开始世界。从这一点开始，GC工作由调度程序启动的标记工作程序和作为分配的一部分执行的辅助程序完成。
+// 对于任何指针写入，写入屏障都会覆盖指针和新指针值（有关详细信息，请参阅mbarrier.go）。
+// 新分配的对象立即标记为黑色。
+//  c. GC执行根标记作业。这包括扫描所有堆栈，着色所有全局变量以及着色堆外运行时数据结构中的任何堆指针。
+// 扫描堆栈会停止goroutine，遮挡堆栈中找到的任何指针，然后恢复goroutine。
+//  d. GC排出灰色对象的工作队列，将每个灰色对象扫描为黑色并着色在对象中找到的所有指针（这反过来可能会将这些指针添加到工作队列中）。
+
+// 3. 一旦全局工作队列为空（但本地工作队列缓存仍然包含work），GC将执行“标记2”子阶段。
+//  a. GC停止所有工作程序，禁用本地工作队列缓存，将每个P的本地工作队列缓存刷新到全局工作队列缓存，并重新启用工作程序。
+// 	b. GC再次排空工作队列，如上面的2d所示。
+
+// 4. 一旦工作队列为空，GC就会执行标记终止。
+//   	a. STW。
+//      b. 将gcphase设置为_GCmarktermination，并禁用工作人员和助手。
+//      c. 从工作队列中排出任何剩余的工作（通常没有）。
+//      d. 执行其他内务管理，如冲洗mcaches。
+
+//  5. GC执行清除阶段。
+//      a. 通过将gcphase设置为_GCoff，设置清除状态和禁用写屏障来准备清除阶段。
+//      b. 开始世界。从此时起，新分配的对象为白色，并在必要时在使用前分配清除spans。
+//      c. GC在后台进行并发清除并响应分配。见下面的描述。
+// 6. 当进行了足够的分配时，重复上面的1开始。请参阅下面有关GC率的讨论。
+
 // Concurrent sweep.
 //
 // The sweep phase proceeds concurrently with normal program execution.
@@ -133,6 +176,33 @@
 // maxObletBytes. When scanning encounters the beginning of a large
 // object, it scans only the first oblet and enqueues the remaining
 // oblets as new scan jobs.
+
+// 并发清除。
+// 清除阶段与正常程序执行并发进行。
+// 堆是一个接着一个span来清楚的（当goroutine需要另一个span时）并且并发在后台goroutine中清除（这有助于不受CPU限制的程序）。
+
+// 在STW标记终止结束时，所有span都标记为“需要清除”。后台清扫goroutine只是一个接一个地清扫sapn。
+
+// 为了避免有未清除span时请求更多OS内存，当goroutine需要另一个span时，它首先尝试通过清除来回收那么多内存。
+// 当goroutine需要分配一个新的小对象span时，它会清除相同对象大小的小对象span，直到它释放至少一个对象。
+// 当goroutine需要从堆中分配大对象span时，它会清除span，直到它将至少那么多页释放到堆中。
+// 有一种情况，这可能是不够的：如果goroutine清除并释放两个不相邻的单页span到堆，它将分配一个新的两页span，
+// 但仍然可以有其他单页未清除span可能是合并成两页的span。
+
+// 确保在未清除的span上不进行任何操作（这会破坏GC位图中的标记位）至关重要。在GC期间，所有mcache都被刷新到中央缓存中，
+// 因此它们是空的。当goroutine抓住一个新的span到mcache时，它会清扫它。
+// 当goroutine显式释放对象或设置终结器时，它确保清除span（通过清除它，或等待并发清除完成）。
+// 只有当所有span都被清扫时，终结器goroutine才会被踢掉。当下一个GC启动时，它清除所有尚未清除的span（如果有的话）。
+
+// GC率
+//  下一个GC是在我们分配了与已经使用的量成比例的额外内存量之后。该比例由GOGC环境变量控制（默认为100）。
+// 如果GOGC = 100并且我们正在使用4M，那么当我们达到8M时我们将再次使用GC（此标记在next_gc变量中被跟踪）。
+// 这使GC成本与分配成本成线性比例。调整GOGC只会改变线性常量（以及使用的额外内存量）。
+
+// Oblets
+//  为了防止在清除大对象时出现长时间暂停并提高并行性，
+// 垃圾收集器将大于maxObletBytes的对象的清除作业分解为最多maxobletBytes的“oblets”。
+// 当清除遇到大对象的开头时，它只清除第一个oblet并将剩余的oblet排队为新的清除作业。
 
 package runtime
 
@@ -214,6 +284,7 @@ func readgogc() int32 {
 // gcenable is called after the bulk of the runtime initialization,
 // just before we're about to start letting user code run.
 // It kicks off the background sweeper goroutine and enables GC.
+// 有main调用，启动后台清扫程序
 func gcenable() {
 	c := make(chan int, 1)
 	go bgsweep(c)
@@ -273,6 +344,7 @@ var writeBarrier struct {
 // gcBlackenEnabled is 1 if mutator assists and background mark
 // workers are allowed to blacken objects. This must only be set when
 // gcphase == _GCmark.
+// 在_GCmar阶段会被设置为1
 var gcBlackenEnabled uint32
 
 // gcBlackenPromptly indicates that optimizations that may
@@ -1239,16 +1311,20 @@ func (t gcTrigger) test() bool {
 //
 // This may return without performing this transition in some cases,
 // such as when called on a system stack or with locks held.
+// 真正的开始gc，整个gc的流程都在这个函数里
 func gcStart(mode gcMode, trigger gcTrigger) {
 	// Since this is called from malloc and malloc is called in
 	// the guts of a number of libraries that might be holding
 	// locks, don't attempt to start GC in non-preemptible or
 	// potentially unstable situations.
 	mp := acquirem()
+	// 如果当前的G是g0 或者 当前的M已经被锁了 或者 当前的M不可抢占
+	// 则释放m，然后返回
 	if gp := getg(); gp == mp.g0 || mp.locks > 1 || mp.preemptoff != "" {
 		releasem(mp)
 		return
 	}
+	//
 	releasem(mp)
 	mp = nil
 
@@ -1276,6 +1352,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	}
 
 	// For stats, check if this GC was forced by the user.
+	// 记录是否强制触发gc, gcTriggerCycle是runtime.GC用的
 	work.userForced = trigger.kind == gcTriggerAlways || trigger.kind == gcTriggerCycle
 
 	// In gcstoptheworld debug mode, upgrade the mode accordingly.
@@ -1297,10 +1374,12 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		traceGCStart()
 	}
 
+	// 如果模式是后台模式则后台启动扫描任务
 	if mode == gcBackgroundMode {
 		gcBgMarkStartWorkers()
 	}
 
+	// 重置标记相关的状态
 	gcResetMarkState()
 
 	work.stwprocs, work.maxprocs = gomaxprocs, gomaxprocs
@@ -1313,12 +1392,14 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	work.pauseNS = 0
 	work.mode = mode
 
+	// 记录开始时间
 	now := nanotime()
 	work.tSweepTerm = now
 	work.pauseStart = now
 	if trace.enabled {
 		traceGCSTWStart(1)
 	}
+	// 停止所有运行中的G, 并禁止它们运行
 	systemstack(stopTheWorldWithSema)
 	// Finish sweep before we start concurrent scan.
 	systemstack(func() {
@@ -1328,7 +1409,9 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	// reclaimed until the next GC cycle.
 	clearpools()
 
+	// gc的轮数增加
 	work.cycles++
+	// 尽可能的并发运行
 	if mode == gcBackgroundMode { // Do as much work concurrently as possible
 		gcController.startCycle()
 		work.heapGoal = memstats.next_gc
@@ -1347,6 +1430,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// allocations are blocked until assists can
 		// happen, we want enable assists as early as
 		// possible.
+		// 设置gc阶段为_GCmark
 		setGCPhase(_GCmark)
 
 		gcBgMarkPrepare() // Must happen before assist enable.
@@ -1371,12 +1455,13 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		gcController.markStartTime = now
 
 		// Concurrent mark.
+		// 重新启动世界
 		systemstack(func() {
 			now = startTheWorldWithSema(trace.enabled)
 		})
 		work.pauseNS += now - work.pauseStart
 		work.tMark = now
-	} else {
+	} else { // 不是并发gc模式
 		if trace.enabled {
 			// Switch to mark termination STW.
 			traceGCSTWDone()

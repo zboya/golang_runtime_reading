@@ -216,7 +216,7 @@ func main() {
 	// because nanotime on some platforms depends on startNano.
 	runtimeInitTime = nanotime()
 
-	// gc 启动
+	// gc 启动一个goroutine进行gc清扫
 	gcenable()
 
 	main_init_done = make(chan bool)

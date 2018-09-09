@@ -577,7 +577,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
-//
+// mallocgc是从堆中分配对象，并根据情况触发gc
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")
@@ -597,6 +597,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	// assistG is the G to charge for this allocation, or nil if
 	// GC is not currently active.
+	// 判断是否要辅助GC工作
+	// gcBlackenEnabled在GC的标记阶段会开启
 	var assistG *g
 	if gcBlackenEnabled != 0 {
 		// Charge the current user G for this allocation.
@@ -631,7 +633,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	c := gomcache()
 	var x unsafe.Pointer
 	noscan := typ == nil || typ.kind&kindNoPointers != 0
-	if size <= maxSmallSize {
+	// size <= 32k
+	if size <= maxSmallSize { // 分配小对象
 		if noscan && size < maxTinySize {
 			// Tiny allocator.
 			//
@@ -715,7 +718,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 				memclrNoHeapPointers(unsafe.Pointer(v), size)
 			}
 		}
-	} else {
+	} else { // 分配大对象
 		var s *mspan
 		shouldhelpgc = true
 		systemstack(func() {
@@ -764,6 +767,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// All slots hold nil so no scanning is needed.
 	// This may be racing with GC so do it atomically if there can be
 	// a race marking the bit.
+	// 如果gc阶段不是_GCoff，也就是说正在gc
+	// 直接分配黑色对象
 	if gcphase != _GCoff {
 		gcmarknewobject(uintptr(x), size, scanSize)
 	}
@@ -772,6 +777,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		racemalloc(x, size)
 	}
 
+	// -msan
 	if msanenabled {
 		msanmalloc(x, size)
 	}
@@ -799,8 +805,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		assistG.gcAssistBytes -= int64(size - dataSize)
 	}
 
+	// 如果需要gc，则触发gc
 	if shouldhelpgc {
 		if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
+			// 调用gcStart开始gc
 			gcStart(gcBackgroundMode, t)
 		}
 	}
