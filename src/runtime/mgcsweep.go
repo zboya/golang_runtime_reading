@@ -49,6 +49,7 @@ func bgsweep(c chan int) {
 	lock(&sweep.lock)
 	sweep.parked = true
 	c <- 1
+	// 休眠
 	goparkunlock(&sweep.lock, "GC sweep wait", traceEvGoBlock, 1)
 
 	for {

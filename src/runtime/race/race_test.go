@@ -15,6 +15,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"internal/race"
 	"internal/testenv"
 	"io"
 	"log"
@@ -243,4 +244,25 @@ func growStack(i int) {
 		return
 	}
 	growStack(i - 1)
+}
+
+func TestRaceIntRWClosures(t *testing.T) {
+	var x, y int
+	ch := make(chan int, 2)
+
+	nosync := make(chan bool)
+	go func() {
+		race.Disable()
+		y = x
+		nosync <- true
+		race.Enable()
+		ch <- 1
+	}()
+	go func() {
+		race.Disable()
+		<-nosync
+		x = 1
+		ch <- 1
+		race.Enable()
+	}()
 }
