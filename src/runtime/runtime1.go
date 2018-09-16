@@ -447,6 +447,7 @@ func timediv(v int64, div int32, rem *int32) int32 {
 // Helpers for Go. Must be NOSPLIT, must only call NOSPLIT functions, and must not block.
 
 //go:nosplit
+// 将当前M的locks加1
 func acquirem() *m {
 	_g_ := getg()
 	_g_.m.locks++
@@ -454,6 +455,7 @@ func acquirem() *m {
 }
 
 //go:nosplit
+// 将mp的locks减1
 func releasem(mp *m) {
 	_g_ := getg()
 	mp.locks--
@@ -464,6 +466,7 @@ func releasem(mp *m) {
 }
 
 //go:nosplit
+// 返回当前M的mcache
 func gomcache() *mcache {
 	return getg().m.mcache
 }

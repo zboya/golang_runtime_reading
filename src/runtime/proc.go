@@ -297,6 +297,7 @@ func main() {
 
 // os_beforeExit is called from os.Exit(0).
 //go:linkname os_beforeExit os.runtime_beforeExit
+// 由 os.Exit(0) 函数调用，会被编译器链接成 os.runtime_beforeExit
 func os_beforeExit() {
 	if raceenabled {
 		racefini()
@@ -304,6 +305,8 @@ func os_beforeExit() {
 }
 
 // start forcegc helper goroutine
+// 初始化forcegchelper goroutine
+// 用来执行强制gc
 func init() {
 	go forcegchelper()
 }
@@ -330,6 +333,10 @@ func forcegchelper() {
 
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
+// Gosched 让出当前的P，允许其他的goroutine去运行。
+// 但是并不假设当前的G一定立马就运行
+// 因为gosched_m操作就是让当前的G加入到全局队列中，
+// 然后触发调度
 func Gosched() {
 	mcall(gosched_m)
 }
@@ -345,6 +352,7 @@ func goschedguarded() {
 // If unlockf returns false, the goroutine is resumed.
 // unlockf must not access this G's stack, as it may be moved between
 // the call to gopark and the call to unlockf.
+//
 // channel,Go语言的定时器、网络IO操作都会调用gopark。
 // unlockf解锁函数指针，lock Lock指针，reason park的原因
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason string, traceEv byte, traceskip int) {
@@ -1071,6 +1079,7 @@ func stopTheWorld(reason string) {
 }
 
 // startTheWorld undoes the effects of stopTheWorld.
+// startTheWorld 启动世界
 func startTheWorld() {
 	systemstack(func() { startTheWorldWithSema(false) })
 	// worldsema must be held over startTheWorldWithSema to ensure
@@ -1105,6 +1114,7 @@ var worldsema uint32 = 1
 // startTheWorldWithSema and stopTheWorldWithSema.
 // Holding worldsema causes any other goroutines invoking
 // stopTheWorld to block.
+// stopTheWorldWithSema STW的核心实现
 func stopTheWorldWithSema() {
 	_g_ := getg()
 
@@ -1116,11 +1126,15 @@ func stopTheWorldWithSema() {
 
 	lock(&sched.lock)
 	sched.stopwait = gomaxprocs
+	// 设置gc等待标记, 调度时看见此标记会进入等待
 	atomic.Store(&sched.gcwaiting, 1)
+	// 抢占所有运行中的G
 	preemptall()
 	// stop current P
 	_g_.m.p.ptr().status = _Pgcstop // Pgcstop is only diagnostic.
 	sched.stopwait--
+
+	// 停止所有的P
 	// try to retake all P's in Psyscall status
 	for _, p := range allp {
 		s := p.status
@@ -1186,6 +1200,7 @@ func mhelpgc() {
 	_g_.m.helpgc = -1
 }
 
+// 启动世界的核心实现，返回开始的时间
 func startTheWorldWithSema(emitTraceEvent bool) int64 {
 	_g_ := getg()
 
@@ -2823,6 +2838,7 @@ top:
 		goto top
 	}
 
+	// println("execute goroutine", gp.goid)
 	// 真正执行gp
 	execute(gp, inheritTime)
 }
@@ -2834,6 +2850,7 @@ top:
 // appropriate time. After calling dropg and arranging for gp to be
 // readied later, the caller can do other work but eventually should
 // call schedule to restart the scheduling of goroutines on this m.
+//
 // dropg删除m与当前goroutine m-> curg（简称gp）之间的关联。
 // 通常，调用者将gp的状态设置为远离Grunning，然后立即调用dropg完成作业。
 // 调用者还负责安排gp将在适当的时间使用ready重新启动。
@@ -2883,18 +2900,22 @@ func park_m(gp *g) {
 	schedule()
 }
 
+// 将当前的G入全剧队列，然后调用调度器
 func goschedImpl(gp *g) {
 	status := readgstatus(gp)
 	if status&^_Gscan != _Grunning {
 		dumpgstatus(gp)
 		throw("bad g status")
 	}
+	// 将gp的状态改为_Grunnable
 	casgstatus(gp, _Grunning, _Grunnable)
+	// 解除与当前M的关联
 	dropg()
 	lock(&sched.lock)
+	// 入全局队列
 	globrunqput(gp)
 	unlock(&sched.lock)
-
+	// 启动调度
 	schedule()
 }
 
@@ -2919,6 +2940,7 @@ func goschedguarded_m(gp *g) {
 	goschedImpl(gp)
 }
 
+// 和gosched_m的作用是一样的
 func gopreempt_m(gp *g) {
 	if trace.enabled {
 		traceGoPreempt()
@@ -3153,6 +3175,7 @@ func reentersyscall(pc, sp uintptr) {
 
 // Standard syscall entry used by the go syscall library and normal cgo calls.
 //go:nosplit
+// 系统调用的时候调用该函数
 func entersyscall(dummy int32) {
 	reentersyscall(getcallerpc(), getcallersp(unsafe.Pointer(&dummy)))
 }
@@ -3697,6 +3720,8 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		// 如果启动了go trace，记录go create事件
 		traceGoCreate(newg, newg.startpc)
 	}
+
+	// println("new goroutine", newg.goid)
 	// 将当前新生成的g，放入队列
 	runqput(_p_, newg, true)
 
@@ -4557,7 +4582,7 @@ func checkdead() {
 // is forced to run.
 //
 // This is a variable for testing purposes. It normally doesn't change.
-var forcegcperiod int64 = 2 * 60 * 1e9
+var forcegcperiod int64 = 2 * 60 * 1e9 // 2min
 
 // Always runs without a P, so write barriers are not allowed.
 //
@@ -4669,14 +4694,18 @@ func sysmon() {
 		} else {
 			idle++
 		}
+
 		// check if we need to force a GC
+		// 检查是否超过2min未触发gc，如果是，那么强制触发gc
 		if t := (gcTrigger{kind: gcTriggerTime, now: now}); t.test() && atomic.Load(&forcegc.idle) != 0 {
 			lock(&forcegc.lock)
 			forcegc.idle = 0
 			forcegc.g.schedlink = 0
+			// forcegc.g = forcegchelper
 			injectglist(forcegc.g)
 			unlock(&forcegc.lock)
 		}
+
 		// scavenge heap once in a while
 		if lastscavenge+scavengelimit/2 < now {
 			mheap_.scavenge(int32(nscavenge), uint64(now), uint64(scavengelimit))
@@ -4702,6 +4731,16 @@ type sysmontick struct {
 // preempted.
 const forcePreemptNS = 10 * 1000 * 1000 // 10ms
 
+// 实现go调度系统的抢占
+// retake()函数会遍历所有的P，如果一个P处于执行状态，
+// 且已经连续执行了较长时间，就会被抢占。
+// retake()调用preemptone()将P的stackguard0设为
+// stackPreempt(关于stackguard的详细内容，可以参考 Split Stacks)，
+// 这将导致该P中正在执行的G进行下一次函数调用时，
+// 导致栈空间检查失败。进而触发morestack()（汇编代码，位于asm_XXX.s中）
+// 然后进行一连串的函数调用，主要的调用过程如下：
+// morestack()（汇编代码）-> newstack() -> gopreempt_m() -> goschedImpl() -> schedule()
+// http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html
 func retake(now int64) uint32 {
 	n := 0
 	// Prevent allp slice changes. This lock will be completely
@@ -5092,6 +5131,9 @@ func runqput(_p_ *p, gp *g, next bool) {
 		// https://go-review.googlesource.com/c/go/+/9289
 		oldnext := _p_.runnext
 		// 将G赋值给_p_.runnext
+		// 最新的G优先级最高，最可能先被执行。
+		// 剩下的G如果go运行时调度器发现有空闲的core，就会把任务偷走点，
+		// 让别的core执行，这样才能充分利用多核，提高并发能
 		if !_p_.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {
 			goto retryNext
 		}
@@ -5271,6 +5313,7 @@ func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 }
 
 //go:linkname setMaxThreads runtime/debug.setMaxThreads
+// 设置最大的os线程数，超过的话直接panic
 func setMaxThreads(in int) (out int) {
 	lock(&sched.lock)
 	out = int(sched.maxmcount)
@@ -5366,6 +5409,10 @@ func sync_runtime_canSpin(i int) bool {
 
 //go:linkname sync_runtime_doSpin sync.runtime_doSpin
 //go:nosplit
+// 调用procyield函数，该函数是汇编语言实现。
+// 函数内部循环调用PAUSE指令。PAUSE指令什么都不做，
+// 但是会消耗CPU时间，在执行PAUSE指令时，
+// CPU不会对他做不必要的优化
 func sync_runtime_doSpin() {
 	procyield(active_spin_cnt)
 }

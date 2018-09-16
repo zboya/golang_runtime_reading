@@ -8,6 +8,7 @@ import "unsafe"
 
 // Should be a built-in for unsafe.Pointer?
 //go:nosplit
+// 将指针地址加x
 func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 	return unsafe.Pointer(uintptr(p) + x)
 }
@@ -15,8 +16,9 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
-// 返回当前的g，并且绑定当前的m
-// 而且这个函数是由编译器重写的，相当于代码逻辑都在编译器里
+// getg返回指向当前g的指针。
+// 编译器将对此函数的调用重写为直接获取g的指令（来自TLS或来自专用寄存器）。
+// https://groups.google.com/forum/#!searchin/golang-nuts/getg|sort:date/golang-nuts/KgPOzaMylHo/nCX0K9E4AQAJ
 func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
@@ -33,6 +35,11 @@ func getg() *g
 // This must NOT be go:noescape: if fn is a stack-allocated closure,
 // fn puts g on a run queue, and g executes before fn returns, the
 // closure will be invalidated while it is still executing.
+//
+// mcall在golang需要进行协程切换时被调用，用来保存被切换出去协程的信息，
+// 并在当前线程的g0协程堆栈上执行新的函数。
+// 一般情况下，会在新函数中执行一次schedule()来挑选新的协程来运行
+// https://zhuanlan.zhihu.com/p/29887309?utm_campaign=studygolang.com&utm_medium=studygolang.com&utm_source=studygolang.com
 func mcall(fn func(*g))
 
 // systemstack runs fn on a system stack.
@@ -53,6 +60,25 @@ func mcall(fn func(*g))
 //	... use x ...
 //
 //go:noescape
+// https://groups.google.com/forum/#!searchin/golang-nuts/systemstack$20function%7Csort:date/golang-nuts/JCKWH8fap9o/MBrs2FCnAgAJ
+// goroutines运行在一个小堆栈上。每个go的函数
+// 会检查是否有足够的堆栈空间来运行。如果没有，
+// 它分配一个新的更大的堆栈并将现有的堆栈复制到
+// 新的空间。当然这个复制栈的代码需要运行也需要一些
+// 堆栈，它显然不能在已经用完堆栈的go函数中运行。
+
+// 系统堆栈是操作系统为新线程创建的堆栈。它比goroutine堆栈大。
+// 堆栈复制在此堆栈上运行。每个线程有一个系统堆栈，而不是每个goroutine。
+// 一般来说，goroutine的数目比线程多。
+
+// 一些垃圾收集步骤也在系统堆栈上运行
+// 以便在GC正在执行的操作和检查不应收集的活动对象的堆栈之间进行明确分离
+
+// 在系统堆栈上运行函数的含义是
+// 函数不能增长堆栈，也不可能被调度程序抢占。
+// 所以它只能用于简短自足的运作。
+
+// 调用systemstack就是切换到系统线程的堆栈来运行fn，结束后切换回go函数堆栈。
 func systemstack(fn func())
 
 func badsystemstack() {

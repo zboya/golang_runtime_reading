@@ -450,11 +450,12 @@ type m struct {
 	mallocing  int32
 	throwing   int32
 	preemptoff string // if != "", keep curg running on this m
-	locks      int32
-	softfloat  int32
-	dying      int32
-	profilehz  int32
-	helpgc     int32
+	// locks表示该M是否被锁的状态，M被锁的状态下该M无法执行gc
+	locks     int32
+	softfloat int32
+	dying     int32
+	profilehz int32
+	helpgc    int32
 	// 是否自旋，自旋就表示M正在找G来运行
 	spinning bool // m is out of work and is actively looking for work
 	// m是否被阻塞
