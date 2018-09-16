@@ -542,6 +542,7 @@ func nextFreeFast(s *mspan) gclinkptr {
 // weight allocation. If it is a heavy weight allocation the caller must
 // determine whether a new GC cycle needs to be started or if the GC is active
 // whether this goroutine needs to assist the GC.
+// 找到freeIndex，如果span里面所有元素都已分配, 则需要分配新的span
 func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
 	s = c.alloc[spc]
 	shouldhelpgc = false
@@ -630,6 +631,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 
 	shouldhelpgc := false
 	dataSize := size
+	// 获取当前M的mcache
 	c := gomcache()
 	var x unsafe.Pointer
 	noscan := typ == nil || typ.kind&kindNoPointers != 0
@@ -805,8 +807,9 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		assistG.gcAssistBytes -= int64(size - dataSize)
 	}
 
-	// 如果需要gc，则触发gc
+	// 如果之前分配了新的span, 则判断是否需要后台启动GC
 	if shouldhelpgc {
+		// 检查是否需要触发gc
 		if t := (gcTrigger{kind: gcTriggerHeap}); t.test() {
 			// 调用gcStart开始gc
 			gcStart(gcBackgroundMode, t)

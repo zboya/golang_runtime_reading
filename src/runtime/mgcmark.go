@@ -898,6 +898,7 @@ const (
 // scan work.
 //
 //go:nowritebarrier
+// gc标记对象
 func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	if !writeBarrier.needed {
 		throw("gcDrain phase incorrect")
@@ -931,6 +932,7 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			if job >= work.markrootJobs {
 				break
 			}
+			// 扫描标记根对象
 			markroot(gcw, job)
 			if check != nil && check() {
 				goto done
@@ -962,6 +964,8 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			// work barrier reached or tryGet failed.
 			break
 		}
+
+		// 消费标记队列, 对从标记队列中取出的对象
 		scanobject(b, gcw)
 
 		// Flush background scan work credit to the global

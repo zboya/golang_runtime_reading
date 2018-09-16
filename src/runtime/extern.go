@@ -230,6 +230,8 @@ func Version() string {
 	return sys.TheVersion
 }
 
+// GOOS和GOARCH默认是由编译器制定的，也可以编译时指定
+
 // GOOS is the running program's operating system target:
 // one of darwin, freebsd, linux, and so on.
 const GOOS string = sys.GOOS

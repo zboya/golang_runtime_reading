@@ -253,11 +253,13 @@ func gcinit() {
 	mheap_.sweepdone = 1
 
 	// Set a reasonable initial GC trigger.
+	// 设置gc触发比率
 	memstats.triggerRatio = 7 / 8.0
 
 	// Fake a heap_marked value so it looks like a trigger at
 	// heapminimum is the appropriate growth from heap_marked.
 	// This will go into computing the initial GC goal.
+	// 初始化heap_marked，让gc触发有个初始目标
 	memstats.heap_marked = uint64(float64(heapminimum) / (1 + memstats.triggerRatio))
 
 	// Set gcpercent from the environment. This will also compute
@@ -278,6 +280,7 @@ func readgogc() int32 {
 	if n, ok := atoi32(p); ok {
 		return n
 	}
+	// 默认100
 	return 100
 }
 
@@ -293,6 +296,7 @@ func gcenable() {
 }
 
 //go:linkname setGCPercent runtime/debug.setGCPercent
+// 设置gc的百分比，同时设置初始gc出发条件
 func setGCPercent(in int32) (out int32) {
 	lock(&mheap_.lock)
 	out = gcpercent
@@ -300,8 +304,10 @@ func setGCPercent(in int32) (out int32) {
 		in = -1
 	}
 	gcpercent = in
+	// 默认4M
 	heapminimum = defaultHeapMinimum * uint64(gcpercent) / 100
 	// Update pacing in response to gcpercent change.
+	// gcinit 中 设置了 memstats.triggerRatio = 7 / 8.0
 	gcSetTriggerRatio(memstats.triggerRatio)
 	unlock(&mheap_.lock)
 
@@ -663,6 +669,7 @@ func (c *gcControllerState) revise() {
 }
 
 // endCycle computes the trigger ratio for the next cycle.
+// 计算及调整gc 下一次触发的比率 triggerRatio
 func (c *gcControllerState) endCycle() float64 {
 	if work.userForced {
 		// Forced GC means this cycle didn't start at the
@@ -778,6 +785,7 @@ func (c *gcControllerState) enlistWorker() {
 
 // findRunnableGCWorker returns the background mark worker for _p_ if it
 // should be run. This must only be called when gcBlackenEnabled != 0.
+// 尝试从p中获取gc标记工作线程
 func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 	if gcBlackenEnabled == 0 {
 		throw("gcControllerState.findRunnable: blackening not enabled")
@@ -867,6 +875,7 @@ func pollFractionalWorkerExit() bool {
 // memstats.heap_live. These must be up to date.
 //
 // mheap_.lock must be held or the world must be stopped.
+// 由 setGCPercent 或者 gcMarkTermination 调用，计算和设置gc触发的临界值
 func gcSetTriggerRatio(triggerRatio float64) {
 	// Set the trigger ratio, capped to reasonable bounds.
 	if triggerRatio < 0 {
@@ -881,6 +890,7 @@ func gcSetTriggerRatio(triggerRatio float64) {
 			triggerRatio = maxTriggerRatio
 		}
 	}
+	// 得到gc的比率，最大值是0.95，初始值 7/8=0.875
 	memstats.triggerRatio = triggerRatio
 
 	// Compute the absolute GC trigger from the trigger ratio.
@@ -891,7 +901,7 @@ func gcSetTriggerRatio(triggerRatio float64) {
 	if gcpercent >= 0 {
 		trigger = uint64(float64(memstats.heap_marked) * (1 + triggerRatio))
 		// Don't trigger below the minimum heap size.
-		minTrigger := heapminimum
+		minTrigger := heapminimum // 4M
 		if !gosweepdone() {
 			// Concurrent sweep happens in the heap growth
 			// from heap_live to gc_trigger, so ensure
@@ -1140,6 +1150,7 @@ var work struct {
 // GC runs a garbage collection and blocks the caller until the
 // garbage collection is complete. It may also block the entire
 // program.
+// 用户层手动调用GC来触发gc
 func GC() {
 	// We consider a cycle to be: sweep termination, mark, mark
 	// termination, and sweep. This function shouldn't return
@@ -1275,6 +1286,7 @@ const (
 // test returns true if the trigger condition is satisfied, meaning
 // that the exit condition for the _GCoff phase has been met. The exit
 // condition should be tested when allocating.
+// 测试是否需要触发gc，gcTriggerHeap和gcTriggerTime这两个条件是自然触发的
 func (t gcTrigger) test() bool {
 	if !memstats.enablegc || panicking != 0 {
 		return false
@@ -1312,6 +1324,11 @@ func (t gcTrigger) test() bool {
 // This may return without performing this transition in some cases,
 // such as when called on a system stack or with locks held.
 // 真正的开始gc，整个gc的流程都在这个函数里
+// GC在满足一定条件后会被触发, 触发条件有以下几种:
+// gcTriggerAlways: 强制触发GC
+// gcTriggerHeap: 当前分配的内存达到一定值就触发GC
+// gcTriggerTime: 当2min中内都没有执行过GC就触发GC
+// gcTriggerCycle: 手动触发GC的runtime.GC()会使用这个条件
 func gcStart(mode gcMode, trigger gcTrigger) {
 	// Since this is called from malloc and malloc is called in
 	// the guts of a number of libraries that might be holding
@@ -1324,8 +1341,9 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		releasem(mp)
 		return
 	}
-	//
+	// m的locks减1
 	releasem(mp)
+	// ? why
 	mp = nil
 
 	// Pick up the remaining unswept/not being swept spans concurrently
@@ -1338,6 +1356,8 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	//
 	// We check the transition condition continuously here in case
 	// this G gets delayed in to the next GC cycle.
+	// 由于种种原因，有可能出现上一轮gc出现了问题，导致垃圾未被回收，
+	// 那么在这里会被回收掉
 	for trigger.test() && gosweepone() != ^uintptr(0) {
 		sweep.nbgsweep++
 	}
@@ -1346,6 +1366,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	// transition.
 	semacquire(&work.startSema)
 	// Re-check transition condition under transition lock.
+	// 重新检查gcTrigger的条件是否成立, 不成立时不触发GC
 	if !trigger.test() {
 		semrelease(&work.startSema)
 		return
@@ -1359,6 +1380,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	// We do this after re-checking the transition condition so
 	// that multiple goroutines that detect the heap trigger don't
 	// start multiple STW GCs.
+	// 处理gc debug
 	if mode == gcBackgroundMode {
 		if debug.gcstoptheworld == 1 {
 			mode = gcForceMode
@@ -1368,13 +1390,16 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	}
 
 	// Ok, we're doing it! Stop everybody else
+	// Golang中的sema，提供了休眠和唤醒Goroutine的功能，来实现同步机制。
 	semacquire(&worldsema)
 
+	// trace tool启动
 	if trace.enabled {
 		traceGCStart()
 	}
 
-	// 如果模式是后台模式则后台启动扫描任务
+	// 默认情况下mode就是gcBackgroundMode
+	// 启动后台标记任务
 	if mode == gcBackgroundMode {
 		gcBgMarkStartWorkers()
 	}
@@ -1401,18 +1426,22 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	}
 	// 停止所有运行中的G, 并禁止它们运行
 	systemstack(stopTheWorldWithSema)
+
 	// Finish sweep before we start concurrent scan.
+	// 清扫上一轮GC未清扫的span, 确保上一轮GC已完成
 	systemstack(func() {
 		finishsweep_m()
 	})
 	// clearpools before we start the GC. If we wait they memory will not be
 	// reclaimed until the next GC cycle.
+	// 清理sched.sudogcache和sched.deferpool, 让它们的内存可以被回收
 	clearpools()
 
 	// gc的轮数增加
 	work.cycles++
 	// 尽可能的并发运行
 	if mode == gcBackgroundMode { // Do as much work concurrently as possible
+		// 标记开始了新一轮的GC
 		gcController.startCycle()
 		work.heapGoal = memstats.next_gc
 
@@ -1433,7 +1462,9 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// 设置gc阶段为_GCmark
 		setGCPhase(_GCmark)
 
+		// 重置后台标记任务的计数
 		gcBgMarkPrepare() // Must happen before assist enable.
+		// 计算扫描根对象的任务数量
 		gcMarkRootPrepare()
 
 		// Mark all active tinyalloc blocks. Since we're
@@ -1441,6 +1472,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// other allocations. The alternative is to blacken
 		// the tiny block on every allocation from it, which
 		// would slow down the tiny allocator.
+		// 标记所有tiny alloc等待合并的对象
 		gcMarkTinyAllocs()
 
 		// At this point all Ps have enabled the write
@@ -1457,6 +1489,9 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// Concurrent mark.
 		// 重新启动世界
 		systemstack(func() {
+			// 重启世界后各个M会重新开始调度,
+			// 调度时会优先使用上面提到的findRunnableGCWorker函数查找任务,
+			// 之后就有大约25%的P运行后台标记任务，也就是 gcBgMarkWorker
 			now = startTheWorldWithSema(trace.enabled)
 		})
 		work.pauseNS += now - work.pauseStart
@@ -1493,6 +1528,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 // function because completion of concurrent mark is best-effort
 // anyway. Any work created by write barriers here will be cleaned up
 // by mark termination.
+// 会执行两个mark阶段，mark1 和 mark2 阶段，详细可以看文件开头的解释
 func gcMarkDone() {
 top:
 	semacquire(&work.markDoneSema)
@@ -1602,6 +1638,7 @@ top:
 	}
 }
 
+// 完成标记
 func gcMarkTermination(nextTriggerRatio float64) {
 	// World is stopped.
 	// Start marktermination which includes enabling the write barrier.
@@ -1650,6 +1687,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 
 		// marking is complete so we can turn the write barrier off
 		setGCPhase(_GCoff)
+		// 唤醒后台清扫任务
 		gcSweep(work.mode)
 
 		if debug.gctrace > 1 {
@@ -1803,12 +1841,16 @@ func gcMarkTermination(nextTriggerRatio float64) {
 // These goroutines will not run until the mark phase, but they must
 // be started while the work is not stopped and from a regular G
 // stack. The caller must hold worldsema.
+// 预先准备好标记gouroutine，直到gc为标记阶段。
 func gcBgMarkStartWorkers() {
 	// Background marking is performed by per-P G's. Ensure that
 	// each P has a background GC G.
+	// 这里虽然为每个P启动了一个后台标记任务, 但是可以同时工作的只有25%,
+	// 这个逻辑在调度系统中M获取G时调用的 findRunnableGCWorker 中
 	for _, p := range allp {
 		if p.gcBgMarkWorker == 0 {
 			go gcBgMarkWorker(p)
+			// 启动后等待该任务通知信号量bgMarkReady再继续
 			notetsleepg(&work.bgMarkReady, -1)
 			noteclear(&work.bgMarkReady)
 		}
@@ -1831,6 +1873,9 @@ func gcBgMarkPrepare() {
 	work.nwait = ^uint32(0)
 }
 
+// 由 gcBgMarkStartWorkers 调用，gcBgMarkWorker为gc标记的工作线程
+// 一开始休眠，然后等待唤醒，唤醒后根据不同的工作模式调用
+// gcDrain来执行标记
 func gcBgMarkWorker(_p_ *p) {
 	gp := getg()
 
@@ -1997,6 +2042,7 @@ func gcBgMarkWorker(_p_ *p) {
 			_p_.gcBgMarkWorker.set(nil)
 			releasem(park.m.ptr())
 
+			// 标记完成实现
 			gcMarkDone()
 
 			// Disable preemption and prepare to reattach
@@ -2031,6 +2077,7 @@ func gcMarkWorkAvailable(p *p) bool {
 // All gcWork caches must be empty.
 // STW is in effect at this point.
 //TODO go:nowritebarrier
+// 完成最终标记，必须在_GCmarktermination阶段且已经STW
 func gcMark(start_time int64) {
 	if debug.allocfreetrace > 0 {
 		tracegc()
@@ -2183,6 +2230,7 @@ func gcSweep(mode gcMode) {
 //
 // This is safe to do without the world stopped because any Gs created
 // during or after this will start out in the reset state.
+// 重置gc标记相关的状态
 func gcResetMarkState() {
 	// This may be called during a concurrent phase, so make sure
 	// allgs doesn't change.
