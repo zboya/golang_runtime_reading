@@ -30,6 +30,7 @@ type sweepdata struct {
 // progress.
 //
 //go:nowritebarrier
+// 清扫上一轮GC未清扫的span, 确保上一轮GC已完成
 func finishsweep_m() {
 	// Sweeping must be complete before marking commences, so
 	// sweep any unswept spans. If this is a concurrent GC, there
@@ -76,6 +77,7 @@ func bgsweep(c chan int) {
 // sweeps one span
 // returns number of pages returned to heap, or ^uintptr(0) if there is nothing to sweep
 //go:nowritebarrier
+// 清扫一个span，并返回清扫的page的个数
 func sweepone() uintptr {
 	_g_ := getg()
 	sweepRatio := mheap_.sweepPagesPerByte // For debugging
