@@ -899,15 +899,25 @@ const (
 //
 //go:nowritebarrier
 // gc标记对象
+// gcDrain扫描根和对象，黑化灰色对象，直到所有灰色对象都是处理掉。
+// 如果 flags&gcDrainUntilPreempt != 0 ，当g.preempt==true时才返回
+// 如果 flags&gcDrainIdle != 0，当有其他工作的时候返回
+// 如果 flags&gcDrainFractional != 0，当pollFractionalWorkerExit()返回
+// 如果 flags&gcDrainNoBlock != 0，一获取不到更多的工作就返回
+// 如果 flags&gcDrainFlushBgCredit != 0，计算后台的扫描量来减少辅助GC和唤醒等待中的G
 func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	if !writeBarrier.needed {
 		throw("gcDrain phase incorrect")
 	}
 
 	gp := getg().m.curg
+	// 看到抢占标志时是否要返回
 	preemptible := flags&gcDrainUntilPreempt != 0
+	// 没有任务时是否要等待任务
 	blocking := flags&(gcDrainUntilPreempt|gcDrainIdle|gcDrainFractional|gcDrainNoBlock) == 0
+	// 是否计算后台的扫描量来减少辅助GC和唤醒等待中的G
 	flushBgCredit := flags&gcDrainFlushBgCredit != 0
+	// 是否只执行一定量的工作
 	idle := flags&gcDrainIdle != 0
 
 	initScanWork := gcw.scanWork

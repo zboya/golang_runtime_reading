@@ -355,6 +355,8 @@ func goschedguarded() {
 //
 // channel,Go语言的定时器、网络IO操作都会调用gopark。
 // unlockf解锁函数指针，lock Lock指针，reason park的原因
+// 暂停当前G的运行，用unlockf作为判断是否恢复运行，所以该G必须主动恢复，
+// 否则该任务会遗失。
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason string, traceEv byte, traceskip int) {
 	mp := acquirem()
 	gp := mp.curg
@@ -378,6 +380,7 @@ func goparkunlock(lock *mutex, reason string, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
 
+// 与gopark配套，用于恢复G
 func goready(gp *g, traceskip int) {
 	systemstack(func() {
 		ready(gp, traceskip, true)
@@ -691,6 +694,8 @@ func mcommoninit(mp *m) {
 }
 
 // Mark gp ready to run.
+// 将gp的状态更改为_Grunnable，以便调度器调度执行
+// 并且如果next==true，那么设置为优先级最高，并尝试wakep
 func ready(gp *g, traceskip int, next bool) {
 	if trace.enabled {
 		traceGoUnpark(gp, traceskip)
@@ -2515,9 +2520,12 @@ stop:
 	// We have nothing to do. If we're in the GC mark phase, can
 	// safely scan and blacken objects, and have work to do, run
 	// idle-time marking rather than give up the P.
-	// 关于gc的处理，暂时不分析
+	// 当前的M找不到G来运行。如果此时P处于 GC mark 阶段
+	// 那么此时可以安全的扫描和黑化对象，和返回 gcBgMarkWorker 来运行
 	if gcBlackenEnabled != 0 && _p_.gcBgMarkWorker != 0 && gcMarkWorkAvailable(_p_) {
+		// 设置gcMarkWorkerMode 为 gcMarkWorkerIdleMode
 		_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode
+		// 获取gcBgMarkWorker goroutine
 		gp := _p_.gcBgMarkWorker.ptr()
 		casgstatus(gp, _Gwaiting, _Grunnable)
 		if trace.enabled {
@@ -2567,7 +2575,7 @@ stop:
 	// the system is fully loaded so no spinning threads are required.
 	// Also see "Worker thread parking/unparking" comment at the top of the file.
 
-	// 精致的舞蹈：线程从旋转状态转换到非旋转状态，可能与提交新的goroutine同时发生。
+	// 一些技巧与平衡：线程从旋转状态转换到非旋转状态，可能与提交新的goroutine同时发生。
 	// 我们必须首先删除nmspinning，然后再次检查所有per-P队列（中间有#StoreLoad内存屏障）。
 	// 如果我们反过来这样做，另一个线程可以在我们检查所有运行队列之后但在我们放弃nmspinning之前提交goroutine;
 	// 因此，没有人会取消一个线程来运行goroutine。 如果我们发现下面的新工作，我们需要恢复m.spinning作为重置的信号，
@@ -2884,6 +2892,7 @@ func park_m(gp *g) {
 	// 当前g放弃m
 	dropg()
 
+	// 执行解锁函数，如果返回为false，则恢复执行
 	if _g_.m.waitunlockf != nil {
 		fn := *(*func(*g, unsafe.Pointer) bool)(unsafe.Pointer(&_g_.m.waitunlockf))
 		ok := fn(gp, _g_.m.waitlock)
@@ -2897,6 +2906,7 @@ func park_m(gp *g) {
 			execute(gp, true) // Schedule it back, never returns.
 		}
 	}
+	// 调度执行其他任务
 	schedule()
 }
 
@@ -3209,6 +3219,7 @@ func entersyscall_gcwait() {
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
 //go:nosplit
+// 知道自己会 block，直接就把 p 交出来了。
 func entersyscallblock(dummy int32) {
 	_g_ := getg()
 

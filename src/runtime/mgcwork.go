@@ -55,6 +55,11 @@ func init() {
 // the garbage collector from transitioning to mark termination since
 // gcWork may locally hold GC work buffers. This can be done by
 // disabling preemption (systemstack or acquirem).
+//垃圾收集器工作池抽象。
+//
+//这实现了指向灰色对象的指针的生产者/消费者模型。灰色对象是在工作队列中标记的对象。标记黑色对象而不是工作队列。
+//
+//写屏障，根发现，堆栈扫描和对象扫描会生成指向灰色对象的指针。扫描消耗指向灰色对象的指针，从而使它们变黑，然后扫描它们可能产生指向灰色对象的新指针
 type gcWork struct {
 	// wbuf1 and wbuf2 are the primary and secondary work buffers.
 	//

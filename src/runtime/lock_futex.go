@@ -127,15 +127,22 @@ func noteclear(n *note) {
 	n.key = 0
 }
 
+// 与notesleep相匹配，唤醒
 func notewakeup(n *note) {
 	old := atomic.Xchg(key32(&n.key), 1)
+	// 如果old不等于0，则表示已经唤醒过了
 	if old != 0 {
 		print("notewakeup - double wakeup (", old, ")\n")
 		throw("notewakeup - double wakeup")
 	}
+	// 唤醒后 key==1
 	futexwakeup(key32(&n.key), 1)
 }
 
+// 相比gosched、gopark，反应更敏捷的是 notesleep ，
+// 既不让出M，也不让G重回任务队列。它直接让线程休眠直到被唤醒，
+// 更适合stopm，gcMark这种类似自旋的场景。
+// 在Linux平台采用 futex(快速用户空间互斥体)实现。
 func notesleep(n *note) {
 	gp := getg()
 	if gp != gp.m.g0 {
@@ -146,6 +153,8 @@ func notesleep(n *note) {
 		// Sleep for an arbitrary-but-moderate interval to poll libc interceptors.
 		ns = 10e6
 	}
+	// key==0，则休眠
+	// key==1，则恢复
 	for atomic.Load(key32(&n.key)) == 0 {
 		gp.m.blocked = true
 		futexsleep(key32(&n.key), 0, ns)
