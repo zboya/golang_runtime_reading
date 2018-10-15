@@ -1325,6 +1325,8 @@ func (t gcTrigger) test() bool {
 //
 // This may return without performing this transition in some cases,
 // such as when called on a system stack or with locks held.
+
+// http://www.cnblogs.com/zkweb/p/7880099.html?utm_source=tuicool&utm_medium=referral
 // 真正的开始gc，整个gc的流程都在这个函数里
 // GC在满足一定条件后会被触发, 触发条件有以下几种:
 // gcTriggerAlways: 强制触发GC

@@ -634,6 +634,7 @@ type schedt struct {
 	// 全局的可运行的g队列
 	runqhead guintptr
 	runqtail guintptr
+	// 全局队列的大小
 	runqsize int32
 
 	// Global cache of dead G's.

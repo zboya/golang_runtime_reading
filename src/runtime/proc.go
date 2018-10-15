@@ -2671,14 +2671,18 @@ stop:
 // be doing. This is a fairly lightweight check to be used for
 // background work loops, like idle GC. It checks a subset of the
 // conditions checked by the actual scheduler.
+// 检查当前的P是否有非后台工作，有则返回true
 func pollWork() bool {
+	// 全局队列有G，返回true
 	if sched.runqsize != 0 {
 		return true
 	}
 	p := getg().m.p.ptr()
+	// P本地队列有G，返回true
 	if !runqempty(p) {
 		return true
 	}
+	// 如果有网络io的G，返回true
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && sched.lastpoll != 0 {
 		if gp := netpoll(false); gp != nil {
 			injectglist(gp)

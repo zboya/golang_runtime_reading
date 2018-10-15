@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	fixedRootFinalizers = iota
-	fixedRootFreeGStacks
-	fixedRootCount
+	fixedRootFinalizers  = iota // 0
+	fixedRootFreeGStacks        // 1
+	fixedRootCount              // 2
 
 	// rootBlockBytes is the number of bytes to scan per data or
 	// BSS root.
@@ -51,6 +51,8 @@ const (
 // The world must be stopped.
 //
 //go:nowritebarrier
+// 扫描根对象的准备和初始化一些扫描相关的状态
+// 根对象包括栈上的变量、全局变量和一些杂乱的变量（不知道是啥）
 func gcMarkRootPrepare() {
 	if gcphase == _GCmarktermination {
 		work.nFlushCacheRoots = int(gomaxprocs)
@@ -59,6 +61,7 @@ func gcMarkRootPrepare() {
 	}
 
 	// Compute how many data and BSS root blocks there are.
+	// ? BSS是啥意思？
 	nBlocks := func(bytes uintptr) int {
 		return int((bytes + rootBlockBytes - 1) / rootBlockBytes)
 	}
@@ -67,7 +70,10 @@ func gcMarkRootPrepare() {
 	work.nBSSRoots = 0
 
 	// Only scan globals once per cycle; preferably concurrently.
+	// 每轮gc只进行一次，最好并发运行
 	if !work.markrootDone {
+		// 计算和扫描可读写的全局变量的任务数
+		// ? 未细看
 		for _, datap := range activeModules() {
 			nDataRoots := nBlocks(datap.edata - datap.data)
 			if nDataRoots > work.nDataRoots {
@@ -75,6 +81,7 @@ func gcMarkRootPrepare() {
 			}
 		}
 
+		// 计算扫描只读的全局变量的任务数量
 		for _, datap := range activeModules() {
 			nBSSRoots := nBlocks(datap.ebss - datap.bss)
 			if nBSSRoots > work.nBSSRoots {
@@ -83,6 +90,7 @@ func gcMarkRootPrepare() {
 		}
 	}
 
+	// span中的finalizer和各个G的栈每一轮GC只扫描一次
 	if !work.markrootDone {
 		// On the first markroot, we need to scan span roots.
 		// In concurrent GC, this happens during concurrent
@@ -96,6 +104,7 @@ func gcMarkRootPrepare() {
 		// may be added to this list during concurrent GC, but
 		// we only care about spans that were allocated before
 		// this mark phase.
+		// 计算扫描span中的finalizer的任务数量
 		work.nSpanRoots = mheap_.sweepSpans[mheap_.sweepgen/2%2].numBlocks()
 
 		// On the first markroot, we need to scan all Gs. Gs
@@ -106,8 +115,11 @@ func gcMarkRootPrepare() {
 		// scanned during mark termination. During mark
 		// termination, allglen isn't changing, so we'll scan
 		// all Gs.
+		// 计算扫描各个G的栈的任务数量
 		work.nStackRoots = int(atomic.Loaduintptr(&allglen))
 	} else {
+		// 重置finalizer的任务数量 和 G的栈的任务数量
+
 		// We've already scanned span roots and kept the scan
 		// up-to-date during concurrent mark.
 		work.nSpanRoots = 0
@@ -124,6 +136,7 @@ func gcMarkRootPrepare() {
 	}
 
 	work.markrootNext = 0
+	// 计算得到跟对象的个数
 	work.markrootJobs = uint32(fixedRootCount + work.nFlushCacheRoots + work.nDataRoots + work.nBSSRoots + work.nSpanRoots + work.nStackRoots)
 }
 
@@ -175,6 +188,7 @@ var oneptrmask = [...]uint8{1}
 // nowritebarrier is only advisory here.
 //
 //go:nowritebarrier
+// 标记根对象，不可抢占
 func markroot(gcw *gcWork, i uint32) {
 	// TODO(austin): This is a bit ridiculous. Compute and store
 	// the bases in gcMarkRootPrepare instead of the counts.
@@ -188,19 +202,25 @@ func markroot(gcw *gcWork, i uint32) {
 	// Note: if you add a case here, please also update heapdump.go:dumproots.
 	switch {
 	case baseFlushCache <= i && i < baseData:
+		// 释放mcache中的所有span, 要求STW
 		flushmcache(int(i - baseFlushCache))
 
 	case baseData <= i && i < baseBSS:
+		// 扫描可读写的全局变量
+		// 这里只会扫描i对应的block, 扫描时传入包含哪里有指针的bitmap数据
 		for _, datap := range activeModules() {
 			markrootBlock(datap.data, datap.edata-datap.data, datap.gcdatamask.bytedata, gcw, int(i-baseData))
 		}
 
 	case baseBSS <= i && i < baseSpans:
+		// 扫描只读的全局变量
+		// 这里只会扫描i对应的block, 扫描时传入包含哪里有指针的bitmap数据
 		for _, datap := range activeModules() {
 			markrootBlock(datap.bss, datap.ebss-datap.bss, datap.gcbssmask.bytedata, gcw, int(i-baseBSS))
 		}
 
 	case i == fixedRootFinalizers:
+		// 扫描析构器队列
 		// Only do this once per GC cycle since we don't call
 		// queuefinalizer during marking.
 		if work.markrootDone {
@@ -212,6 +232,7 @@ func markroot(gcw *gcWork, i uint32) {
 		}
 
 	case i == fixedRootFreeGStacks:
+		// 释放已中止的G的栈
 		// Only do this once per GC cycle; preferably
 		// concurrently.
 		if !work.markrootDone {
@@ -221,11 +242,14 @@ func markroot(gcw *gcWork, i uint32) {
 		}
 
 	case baseSpans <= i && i < baseStacks:
+		// 扫描各个span中特殊对象(析构器列表)
 		// mark MSpan.specials
 		markrootSpans(gcw, int(i-baseSpans))
 
 	default:
+		// 扫描各个G的栈
 		// the rest is scanning goroutine stacks
+		// 获取需要扫描的G
 		var gp *g
 		if baseStacks <= i && i < end {
 			gp = allgs[i-baseStacks]
@@ -242,14 +266,17 @@ func markroot(gcw *gcWork, i uint32) {
 
 		// scang must be done on the system stack in case
 		// we're trying to scan our own stack.
+		// scang必须在系统栈上运行
 		systemstack(func() {
 			// If this is a self-scan, put the user G in
 			// _Gwaiting to prevent self-deadlock. It may
 			// already be in _Gwaiting if this is a mark
 			// worker or we're in mark termination.
+			// 判断扫描的栈是否自己的
 			userG := getg().m.curg
 			selfScan := gp == userG && readgstatus(userG) == _Grunning
-			if selfScan {
+			if selfScan { // 如果是自己的栈
+				// 更改自己G的状态为_Gwaiting
 				casgstatus(userG, _Grunning, _Gwaiting)
 				userG.waitreason = "garbage collection scan"
 			}
@@ -261,9 +288,10 @@ func markroot(gcw *gcWork, i uint32) {
 			// we scan the stacks we can and ask running
 			// goroutines to scan themselves; and the
 			// second blocks.
+			// 扫描每个G上栈的变量
 			scang(gp, gcw)
 
-			if selfScan {
+			if selfScan { // 如果是自己的栈，扫描结束后切换回_Grunning
 				casgstatus(userG, _Gwaiting, _Grunning)
 			}
 		})
@@ -928,7 +956,10 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	var check func() bool
 	if flags&(gcDrainIdle|gcDrainFractional) != 0 {
 		checkWork = initScanWork + drainCheckThreshold
+		// 如果是idle模式，则check=pollWork，
+		// 如果是gcDrainFractional模式，check = pollFractionalWorkerExit
 		if idle {
+			// 检查是否有用户启用的G在等待调度
 			check = pollWork
 		} else if flags&gcDrainFractional != 0 {
 			check = pollFractionalWorkerExit
@@ -936,6 +967,7 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	}
 
 	// Drain root marking jobs.
+	// 如果根对象未扫描完, 则先扫描根对象
 	if work.markrootNext < work.markrootJobs {
 		for !(preemptible && gp.preempt) {
 			job := atomic.Xadd(&work.markrootNext, +1) - 1
@@ -943,7 +975,9 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 				break
 			}
 			// 扫描标记根对象
+			// 包括全局变量和各个G栈上的变量
 			markroot(gcw, job)
+			// 如果检查为true，则返回
 			if check != nil && check() {
 				goto done
 			}
@@ -951,6 +985,8 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	}
 
 	// Drain heap marking jobs.
+	// 消费已经标记的对象
+	// 如果设置了preemptible标志，则一直循环知道被抢占
 	for !(preemptible && gp.preempt) {
 		// Try to keep work available on the global queue. We used to
 		// check if there were waiting workers, but it's better to
