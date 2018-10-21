@@ -761,16 +761,20 @@ func gcFlushBgCredit(scanWork int64) {
 //
 //go:nowritebarrier
 //go:systemstack
+// 扫描G上的栈，将所有在stack发现的指针都标记为灰色
+// scanstack工作在系统栈上
 func scanstack(gp *g, gcw *gcWork) {
 	if gp.gcscanvalid {
 		return
 	}
 
+	// 没有设置_Gscan标志位，抛出异常
 	if readgstatus(gp)&_Gscan == 0 {
 		print("runtime:scanstack: gp=", gp, ", goid=", gp.goid, ", gp->atomicstatus=", hex(readgstatus(gp)), "\n")
 		throw("scanstack - bad status")
 	}
 
+	// 检查G的状态
 	switch readgstatus(gp) &^ _Gscan {
 	default:
 		print("runtime: gp=", gp, ", goid=", gp.goid, ", gp->atomicstatus=", readgstatus(gp), "\n")
@@ -784,6 +788,7 @@ func scanstack(gp *g, gcw *gcWork) {
 		// ok
 	}
 
+	// 需要扫描的G不可能是系统G
 	if gp == getg() {
 		throw("can't scan our own stack")
 	}
@@ -795,6 +800,7 @@ func scanstack(gp *g, gcw *gcWork) {
 	// Shrink the stack if not much of it is being used. During
 	// concurrent GC, we can do this during concurrent mark.
 	if !work.markrootDone {
+		// 收缩栈
 		shrinkstack(gp)
 	}
 
@@ -808,10 +814,15 @@ func scanstack(gp *g, gcw *gcWork) {
 	// Scan the stack.
 	var cache pcvalueCache
 	scanframe := func(frame *stkframe, unused unsafe.Pointer) bool {
+		// scanframeworker会根据代码地址(pc)获取函数信息
+		// 然后找到函数信息中的stackmap.bytedata, 它保存了函数的栈上哪些地方有指针
+		// 再调用scanblock来扫描函数的栈空间, 同时函数的参数也会这样扫描
 		scanframeworker(frame, &cache, gcw)
 		return true
 	}
+	// 枚举所有调用帧, 分别调用scanframe函数
 	gentraceback(^uintptr(0), ^uintptr(0), 0, gp, 0, nil, 0x7fffffff, scanframe, nil, 0)
+	// 枚举所有defer的调用帧, 分别调用scanframe函数
 	tracebackdefers(gp, scanframe, nil)
 	gp.gcscanvalid = true
 }

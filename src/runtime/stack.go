@@ -1091,6 +1091,16 @@ func gostartcallfn(gobuf *gobuf, fv *funcval) {
 // Maybe shrink the stack being used by gp.
 // Called at garbage collection time.
 // gp must be stopped, but the world need not be.
+// 收缩栈是在mgcmark.go中触发的，主要是在scanstack和markrootFreeGStacks函数中，也就是垃圾回收的时候会根据情况收缩栈
+// shrinkstack 收缩栈在必要的时候
+// 如果这个g是Gdead状态，则会释放栈空间
+// 如果已经使用的栈空间大于总栈空间的1/4，则不进行栈收缩，如果是在正在进行系统调用也不能进行栈缩放，因为system使用的参数可能在栈上面。
+// 缩小栈的空间为原来的一半
+// ---------------------
+// 作者：sydnash
+// 来源：CSDN
+// 原文：https://blog.csdn.net/sydnash/article/details/70263924
+// 版权声明：本文为博主原创文章，转载请附上博文链接！
 func shrinkstack(gp *g) {
 	gstatus := readgstatus(gp)
 	if gstatus&^_Gscan == _Gdead {

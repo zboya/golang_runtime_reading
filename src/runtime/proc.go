@@ -961,12 +961,15 @@ func casgcopystack(gp *g) uint32 {
 // scang blocks until gp's stack has been scanned.
 // It might be scanned by scang or it might be scanned by the goroutine itself.
 // Either way, the stack scan has completed when scang returns.
+// scang会一直阻塞，直到g上的栈扫描完
+// scang有可能是自己扫描自己
 func scang(gp *g, gcw *gcWork) {
 	// Invariant; we (the caller, markroot for a specific goroutine) own gp.gcscandone.
 	// Nothing is racing with us now, but gcscandone might be set to true left over
 	// from an earlier round of stack scanning (we scan twice per GC).
 	// We use gcscandone to record whether the scan has been done during this round.
 
+	// 标记扫描未完成
 	gp.gcscandone = false
 
 	// See http://golang.org/cl/21503 for justification of the yield delay.
@@ -978,19 +981,24 @@ func scang(gp *g, gcw *gcWork) {
 	// gp.gcscandone can transition from false to true when we're not looking
 	// (if we asked for preemption), so any time we lock the status using
 	// castogscanstatus we have to double-check that the scan is still not done.
+	// 循环直到扫描完成
 loop:
 	for i := 0; !gp.gcscandone; i++ {
+		// 查看当前G的状态
 		switch s := readgstatus(gp); s {
 		default:
+			// 都不是下面的状态抛出异常
 			dumpgstatus(gp)
 			throw("stopg: invalid status")
 
 		case _Gdead:
+			// G已经结束，不需要扫描G栈
 			// No stack.
 			gp.gcscandone = true
 			break loop
 
 		case _Gcopystack:
+		// G的栈正在扩展, 下一轮重试
 		// Stack being switched. Go around again.
 
 		case _Grunnable, _Gsyscall, _Gwaiting:
@@ -998,39 +1006,48 @@ loop:
 			// Racing with execution or readying of gp.
 			// The scan bit keeps them from running
 			// the goroutine until we're done.
+			// G不是正在运行中, 更改G的状态，防止它运行
 			if castogscanstatus(gp, s, s|_Gscan) {
 				if !gp.gcscandone {
+					// 扫描G上的栈
 					scanstack(gp, gcw)
 					gp.gcscandone = true
 				}
+				// 恢复G的状态, 并跳出循环
 				restartg(gp)
 				break loop
 			}
 
 		case _Gscanwaiting:
+		// G正在扫描它自己, 等待扫描完毕
 		// newstack is doing a scan for us right now. Wait.
 
 		case _Grunning:
+			// G正在运行
 			// Goroutine running. Try to preempt execution so it can scan itself.
 			// The preemption handler (in newstack) does the actual scan.
 
 			// Optimization: if there is already a pending preemption request
 			// (from the previous loop iteration), don't bother with the atomics.
+			// 如果已经有抢占请求, 则抢占成功时会帮我们处理
 			if gp.preemptscan && gp.preempt && gp.stackguard0 == stackPreempt {
 				break
 			}
 
 			// Ask for preemption and self scan.
+			// 抢占G, 抢占成功时G会扫描它自己
 			if castogscanstatus(gp, _Grunning, _Gscanrunning) {
 				if !gp.gcscandone {
+					// 设置扫描可抢占
 					gp.preemptscan = true
+					// 设置可抢占
 					gp.preempt = true
 					gp.stackguard0 = stackPreempt
 				}
 				casfrom_Gscanstatus(gp, _Gscanrunning, _Grunning)
 			}
 		}
-
+		//  第一轮休眠10毫秒, 第二轮休眠5毫秒
 		if i == 0 {
 			nextYield = nanotime() + yieldDelay
 		}
@@ -1042,6 +1059,7 @@ loop:
 		}
 	}
 
+	// 扫描完成, 取消抢占扫描的请求
 	gp.preemptscan = false // cancel scan request if no longer needed
 }
 
