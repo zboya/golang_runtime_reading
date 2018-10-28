@@ -807,6 +807,7 @@ func scanstack(gp *g, gcw *gcWork) {
 	// Scan the saved context register. This is effectively a live
 	// register that gets moved back and forth between the
 	// register and sched.ctxt without a write barrier.
+	// https://github.com/golang/go/commit/3beaf26e4fbf1bfd166fc3b5b7584a58b11e726c
 	if gp.sched.ctxt != nil {
 		scanblock(uintptr(unsafe.Pointer(&gp.sched.ctxt)), sys.PtrSize, &oneptrmask[0], gcw)
 	}
@@ -829,6 +830,7 @@ func scanstack(gp *g, gcw *gcWork) {
 
 // Scan a stack frame: local variables and function arguments/results.
 //go:nowritebarrier
+// 扫描一个栈帧： 本地变量和函数的参数及返回结果
 func scanframeworker(frame *stkframe, cache *pcvalueCache, gcw *gcWork) {
 
 	f := frame.fn
@@ -1139,6 +1141,7 @@ func gcDrainN(gcw *gcWork, scanWork int64) int64 {
 // gcw.bytesMarked or gcw.scanWork.
 //
 //go:nowritebarrier
+// 通用的扫描函数, 扫描全局变量和栈空间都会用它, 和scanobject不同的是bitmap需要手动传入
 func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork) {
 	// Use local copies of original parameters, so that a stack trace
 	// due to one of the throws below shows the original block
@@ -1149,6 +1152,7 @@ func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork) {
 	arena_start := mheap_.arena_start
 	arena_used := mheap_.arena_used
 
+	// 枚举扫描的地址
 	for i := uintptr(0); i < n; {
 		// Find bits for the next word.
 		bits := uint32(*addb(ptrmask, i/(sys.PtrSize*8)))
@@ -1156,16 +1160,20 @@ func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork) {
 			i += sys.PtrSize * 8
 			continue
 		}
+		// 枚举byte
 		for j := 0; j < 8 && i < n; j++ {
 			if bits&1 != 0 {
 				// Same work as in scanobject; see comments there.
+				// 标记在该地址的对象存活, 并把它加到标记队列(该对象变为灰色)
 				obj := *(*uintptr)(unsafe.Pointer(b + i))
 				if obj != 0 && arena_start <= obj && obj < arena_used {
 					if obj, hbits, span, objIndex := heapBitsForObject(obj, b, i); obj != 0 {
+						// 标记一个对象存活, 并把它加到标记队列(该对象变为灰色)
 						greyobject(obj, b, i, hbits, span, gcw, objIndex)
 					}
 				}
 			}
+			// 处理下一个指针下一个bit
 			bits >>= 1
 			i += sys.PtrSize
 		}
@@ -1178,6 +1186,7 @@ func scanblock(b0, n0 uintptr, ptrmask *uint8, gcw *gcWork) {
 // spans for the size of the object.
 //
 //go:nowritebarrier
+// gcDrain函数扫描完根对象, 就会开始消费标记队列, 对从标记队列中取出的对象调用scanobject函数
 func scanobject(b uintptr, gcw *gcWork) {
 	// Note that arena_used may change concurrently during
 	// scanobject and hence scanobject may encounter a pointer to
@@ -1203,6 +1212,8 @@ func scanobject(b uintptr, gcw *gcWork) {
 		throw("scanobject n == 0")
 	}
 
+	// 对象大小过大时(maxObletBytes是128KB)需要分割扫描
+	// 每次最多只扫描128KB
 	if n > maxObletBytes {
 		// Large object. Break into oblets for better
 		// parallelism and lower latency.
@@ -1240,6 +1251,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 	}
 
 	var i uintptr
+	// 扫描对象中的指针
 	for i = 0; i < n; i += sys.PtrSize {
 		// Find bits for this word.
 		if i != 0 {
@@ -1272,6 +1284,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 			}
 		}
 	}
+	// 统计扫描过的大小和对象数量
 	gcw.bytesMarked += uint64(n)
 	gcw.scanWork += int64(i)
 }
@@ -1299,6 +1312,7 @@ func shade(b uintptr) {
 // See also wbBufFlush1, which partially duplicates this logic.
 //
 //go:nowritebarrierrec
+// 标记一个对象存活, 并把它加到标记队列(该对象变为灰色)
 func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork, objIndex uintptr) {
 	// obj should be start of allocation, and so must be at least pointer-aligned.
 	if obj&(sys.PtrSize-1) != 0 {
@@ -1357,6 +1371,8 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 	// Previously we put the obj in an 8 element buffer that is drained at a rate
 	// to give the PREFETCH time to do its work.
 	// Use of PREFETCHNTA might be more appropriate than PREFETCH
+	// 把对象放入标记队列
+	// 先放入本地标记队列, 失败时把本地标记队列中的部分工作转移到全局标记队列, 再放入本地标记队列
 	if !gcw.putFast(obj) {
 		gcw.put(obj)
 	}

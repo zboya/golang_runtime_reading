@@ -1563,16 +1563,19 @@ top:
 	//
 	// TODO(austin): Should dedicated workers keep an eye on this
 	// and exit gcDrain promptly?
+	// 暂时禁止启动新的后台标记任务
 	atomic.Xaddint64(&gcController.dedicatedMarkWorkersNeeded, -0xffffffff)
 	prevFractionalGoal := gcController.fractionalUtilizationGoal
 	gcController.fractionalUtilizationGoal = 0
 
+	// 判断本地标记队列是否已禁用
 	if !gcBlackenPromptly {
 		// Transition from mark 1 to mark 2.
 		//
 		// The global work list is empty, but there can still be work
 		// sitting in the per-P work caches.
 		// Flush and disable work caches.
+		// 本地标记队列是否未禁用, 禁用然后重新开始后台标记任务
 
 		// Disallow caching workbufs and indicate that we're in mark 2.
 		gcBlackenPromptly = true
@@ -1585,6 +1588,7 @@ top:
 		// transition lock go while we flush caches.
 		semrelease(&work.markDoneSema)
 
+		// 把所有本地标记队列中的对象都推到全局标记队列
 		systemstack(func() {
 			// Flush all currently cached workbufs and
 			// ensure all Ps see gcBlackenPromptly. This
@@ -1611,6 +1615,8 @@ top:
 		atomic.Xaddint64(&gcController.dedicatedMarkWorkersNeeded, 0xffffffff)
 		gcController.fractionalUtilizationGoal = prevFractionalGoal
 
+		// 如果确定没有更多的任务则可以直接跳到函数顶部
+		// 这样就当作是第二次调用了
 		incnwait := atomic.Xadd(&work.nwait, +1)
 		if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
 			// This loop will make progress because
@@ -1620,27 +1626,33 @@ top:
 		}
 	} else {
 		// Transition to mark termination.
+		// 记录完成标记阶段开始的时间和STW开始的时间
 		now := nanotime()
 		work.tMarkTerm = now
 		work.pauseStart = now
+		// 禁止G被抢占
 		getg().m.preemptoff = "gcing"
 		if trace.enabled {
 			traceGCSTWStart(0)
 		}
+		// 停止所有运行中的G, 并禁止它们运行
 		systemstack(stopTheWorldWithSema)
 		// The gcphase is _GCmark, it will transition to _GCmarktermination
 		// below. The important thing is that the wb remains active until
 		// all marking is complete. This includes writes made by the GC.
 
 		// Record that one root marking pass has completed.
+		// 标记对根对象的扫描已完成, 会影响gcMarkRootPrepare中的处理
 		work.markrootDone = true
 
 		// Disable assists and background workers. We must do
 		// this before waking blocked assists.
+		// 禁止辅助GC和后台标记任务的运行
 		atomic.Store(&gcBlackenEnabled, 0)
 
 		// Wake all blocked assists. These will run when we
 		// start the world again.
+		// 唤醒所有因为辅助GC而休眠的G
 		gcWakeAllAssists()
 
 		// Likewise, release the transition lock. Blocked
@@ -1650,9 +1662,11 @@ top:
 
 		// endCycle depends on all gcWork cache stats being
 		// flushed. This is ensured by mark 2.
+		// 计算下一次触发gc需要的heap大小
 		nextTriggerRatio := gcController.endCycle()
 
 		// Perform mark termination. This will restart the world.
+		// 进入完成标记阶段, 会重新启动世界
 		gcMarkTermination(nextTriggerRatio)
 	}
 }
@@ -1661,8 +1675,11 @@ top:
 func gcMarkTermination(nextTriggerRatio float64) {
 	// World is stopped.
 	// Start marktermination which includes enabling the write barrier.
+	// 禁止辅助GC和后台标记任务的运行
 	atomic.Store(&gcBlackenEnabled, 0)
+	// 重新允许本地标记队列(下次GC使用)
 	gcBlackenPromptly = false
+	// 设置当前GC阶段到完成标记阶段, 并启用写屏障
 	setGCPhase(_GCmarktermination)
 
 	work.heap1 = memstats.heap_live
@@ -1672,6 +1689,8 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	mp.preemptoff = "gcing"
 	_g_ := getg()
 	_g_.m.traceback = 2
+
+	// 设置G的状态为等待中这样它的栈可以被扫描
 	gp := _g_.m.curg
 	casgstatus(gp, _Grunning, _Gwaiting)
 	gp.waitreason = "garbage collection"
@@ -1682,7 +1701,9 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	// we don't need to scan gc's internal state).  We also
 	// need to switch to g0 so we can shrink the stack.
 	systemstack(func() {
+		// 开始STW中的标记
 		gcMark(startTime)
+		// 必须立刻返回, 因为外面的G的栈有可能被移动, 不能在这之后访问外面的变量
 		// Must return immediately.
 		// The outer function's stack may have moved
 		// during gcMark (it shrinks stacks, including the
@@ -1706,7 +1727,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 
 		// marking is complete so we can turn the write barrier off
 		setGCPhase(_GCoff)
-		// 唤醒后台清扫任务
+		// 唤醒后台清扫任务, 将在STW结束后开始运行
 		gcSweep(work.mode)
 
 		if debug.gctrace > 1 {
@@ -1728,6 +1749,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	})
 
 	_g_.m.traceback = 0
+	// 设置G的状态为运行中
 	casgstatus(gp, _Gwaiting, _Grunning)
 
 	if trace.enabled {
@@ -1742,6 +1764,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	}
 
 	// Update GC trigger and pacing for the next cycle.
+	// 更新下一次触发gc需要的heap大小(gc_trigger)
 	gcSetTriggerRatio(nextTriggerRatio)
 
 	// Update timing memstats
@@ -1757,6 +1780,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	memstats.pause_total_ns += uint64(work.pauseNS)
 
 	// Update work.totaltime.
+	// 更新所用cpu记录
 	sweepTermCpu := int64(work.stwprocs) * (work.tMark - work.tSweepTerm)
 	// We report idle marking time below, but omit it from the
 	// overall utilization here since it's "free".
@@ -1789,6 +1813,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	// so events don't leak into the wrong cycle.
 	mProf_NextCycle()
 
+	// 重新启动世界
 	systemstack(func() { startTheWorldWithSema(true) })
 
 	// Flush the heap profile so we can start a new cycle next GC.
@@ -1801,6 +1826,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	prepareFreeWorkbufs()
 
 	// Free stack spans. This must be done between GC cycles.
+	// 释放未使用的栈
 	systemstack(freeStackSpans)
 
 	// Print gctrace before dropping worldsema. As soon as we drop
@@ -1850,6 +1876,8 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	mp = nil
 
 	// now that gc is done, kick off finalizer thread if needed
+	// 如果是并行GC, 让当前M继续运行(会回到gcBgMarkWorker然后休眠)
+	// 如果不是并行GC, 则让当前M开始调度
 	if !concurrentSweep {
 		// give the queued finalizers, if any, a chance to run
 		Gosched()
