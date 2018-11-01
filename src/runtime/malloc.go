@@ -176,6 +176,28 @@ const (
 // mallocinit.
 var physPageSize uintptr
 
+// os-defined helpers:
+// sysyAlloc 从os获得一大块内存（0初始化），大约100kb或者1mb的样子
+// note：sysAlloc返回的内存是os对齐的，但是heap allocator会用更大的对齐
+// 因此调用者必须小心对内存重新对齐
+// os一般是4k，go是8k
+//
+// sysUnuesd 通知os这段内存的内容已经不在需要了，可以复用于其他用途(os不一定会回收这个页)
+// sysUsed 通知os这块内存的内容再次需要使用了。
+// 这样做可以做点优化，如果调用sysUnused之后很快调用sysUesd，os不用进行页回收和页分配
+// sysFree 无条件的归还内存(给os)，只有malloc中途发生out of memory的时候才会调用，
+// sysFree 什么都不做也是可以的。(oom问题崩掉就好了)
+//
+// sysReserve预留一段内存(未分配),如果参数非空，说么调用者希望从这里开始预留，
+// 但是sysReserve 仍然可以选择另一个位置如果希望的位置不可用，
+// 有些os上某些情况 sysReserve 仅仅检查位置是否可用而并不真正的预留它，
+// 当sysReserve返回非空时，如果这段内存预留了，它会设置 *reserved为true；
+// 否则设置为false，这意味着仅仅做了检查，没有预留
+// sysReserve返回的内存也是os对齐的，调用者自行对齐是要注意
+// sysMap负责映射这段预留的内存(预留操作只是告诉os我要用了，os不一定真的给)，
+// reserved 参数意思同上
+//
+// sysFault 标记一段内存为fault(已经分配的内存)，仅用于调试
 // OS-defined helpers:
 //
 // sysAlloc obtains a large chunk of zeroed memory from the
@@ -204,7 +226,7 @@ var physPageSize uintptr
 // non-nil, it sets *reserved to true if the address space is
 // reserved, false if it has merely been checked.
 // NOTE: SysReserve returns OS-aligned memory, but the heap allocator
-// may use larger alignment, so the caller must be careful to realign the
+// may use larger alignment, so the caler must be careful to realign the
 // memory obtained by sysAlloc.
 //
 // SysMap maps previously reserved address space for use.
@@ -244,17 +266,22 @@ func mallocinit() {
 	// following order: spans, bitmap, arena.
 	var p, pSize uintptr
 	var reserved bool
-
+	// _MaxMem在linux x64下是512g-1，spanSize=512G/8k * 8=512M
+	// 计算span大小
 	// The spans array holds one *mspan per _PageSize of arena.
 	var spansSize uintptr = (_MaxMem + 1) / _PageSize * sys.PtrSize
 	spansSize = round(spansSize, _PageSize)
 	// The bitmap holds 2 bits per word of arena.
+	// bitmapSize=512G/(8k*8/2)=16M
 	var bitmapSize uintptr = (_MaxMem + 1) / (sys.PtrSize * 8 / 2)
 	bitmapSize = round(bitmapSize, _PageSize)
 
+	// 设置arean区域，分配的数据在一段连续点内存中？？？
 	// Set up the allocation arena, a contiguous area of memory where
 	// allocated data will be found.
 	if sys.PtrSize == 8 {
+		// 64位机器，从一段连续的预留空间分配
+		// 512g 足够了
 		// On a 64-bit machine, allocate from a single contiguous reservation.
 		// 512 GB (MaxMem) should be big enough for now.
 		//
