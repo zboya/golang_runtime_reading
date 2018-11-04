@@ -373,6 +373,16 @@ func (s *mspan) sweep(preserve bool) bool {
 	return res
 }
 
+// deductSweepCredit 对要分配的span进行扣除扫信贷.这必须在span分配之前进行
+// 以确保系统有足够的贷款。如果有必要，还会进行清扫工作防止陷入债务危机。
+// 如果调用者也扫描页(比如large allocation)，他会传入一个人非空的"调用者清扫页"
+// 而留下许多未清扫的页
+//
+// deductSweepCredit做了最坏的打算以便最终分配的span中所有的span bytes可以用于
+// 对象分配
+//
+// deductSweepCredit是 "比例清楚" 系统的核心。他用了gc收集的统计数据来保证足够
+// 的清扫以便所有的pages在两个gc之间的并发清扫阶段可以被清理
 // deductSweepCredit deducts sweep credit for allocating a span of
 // size spanBytes. This must be performed *before* the span is
 // allocated to ensure the system has enough credit. If necessary, it
