@@ -228,7 +228,14 @@ type mspan struct {
 	npages    uintptr // number of pages in span
 
 	manualFreeList gclinkptr // list of free objects in _MSpanManual spans
-
+	// freeindex 在0-nelems之间，代表了查找空闲对象的起点。
+	// 每次分配都会从freeindex开始扫描allocBits直到它为0(allocBits的第x位)，意味着这里是(x)空闲对象
+	// freeindex 调节以使以后的扫描从新发现的freeobject开始。
+	// 如果freeindex==nelem 说明没有空闲对象了
+	// allocBits是对象的bitmap
+	// 如果n>=freeindex而且allocBits[n/8]&(1<<(n%8))为0，(即allocBits的第n位为0)
+	// 否则，n是已经分配的。nelem后的Bits未定义的，不应该被引用
+	// object n 的起使内存是 n*elemsize+(start<<pageShift)  (span起使内存+对象偏移)
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
 	// Each allocation scans allocBits starting at freeindex until it encounters a 0
@@ -249,6 +256,9 @@ type mspan struct {
 	// helps performance.
 	nelems uintptr // number of object in the span.
 
+	// freeindex之后的allocBits的缓存.
+	// allocCache 是 allocBit的一段，从freeindex开始的64位（可能会溢出，自行考虑）
+	//
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
 	// allocCache holds the complement of allocBits, thus allowing

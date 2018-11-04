@@ -191,11 +191,14 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 	return markBits{bytep, mask, allocBitIndex}
 }
 
+// refillAllocCache 从whichByte处取 allocBits的8个bytes(64bit)
+// 并且取反以至于可以用ctz。然后把这8bytes放进allocCache中
 // refillaCache takes 8 bytes s.allocBits starting at whichByte
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
 func (s *mspan) refillAllocCache(whichByte uintptr) {
+	// 获取这8个bytes，这里主要是在做类型转换，实际的代码就是取一个数组地址
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)
 	aCache |= uint64(bytes[0])
@@ -206,17 +209,20 @@ func (s *mspan) refillAllocCache(whichByte uintptr) {
 	aCache |= uint64(bytes[5]) << (5 * 8)
 	aCache |= uint64(bytes[6]) << (6 * 8)
 	aCache |= uint64(bytes[7]) << (7 * 8)
-	s.allocCache = ^aCache
+	s.allocCache = ^aCache //这里取反，allocBit中1表示使用，allocCache中1表示未使用
 }
 
+// nextFreeIndex 返回下一个可用对象的index(是freeindex或在其后)
+// 有一些硬件指令可以优化这段代码，不用担心其性能
 // nextFreeIndex returns the index of the next free object in s at
 // or after s.freeindex.
 // There are hardware instructions that can be used to make this
 // faster if profiling warrants it.
 func (s *mspan) nextFreeIndex() uintptr {
+	// 拿到freeindex
 	sfreeindex := s.freeindex
 	snelems := s.nelems
-	if sfreeindex == snelems {
+	if sfreeindex == snelems { // 没有空闲的对象了
 		return sfreeindex
 	}
 	if sfreeindex > snelems {
@@ -226,14 +232,17 @@ func (s *mspan) nextFreeIndex() uintptr {
 	aCache := s.allocCache
 
 	bitIndex := sys.Ctz64(aCache)
-	for bitIndex == 64 {
+	for bitIndex == 64 { //allocCache为0，没有一个空闲对象，说么要更新一下allocCache了
 		// Move index to start of next cached bits.
+		// 找到下一个缓存的地址。这个是吧sfreeindex取向上64的倍数
 		sfreeindex = (sfreeindex + 64) &^ (64 - 1)
 		if sfreeindex >= snelems {
+			// 说明真的没了
 			s.freeindex = snelems
 			return snelems
 		}
-		whichByte := sfreeindex / 8
+		// 只是缓存的值不行了，更新一下allocCache就好
+		whichByte := sfreeindex / 8 // sfreeindex是64的倍数,不需要担心整除的问题
 		// Refill s.allocCache with the next 64 alloc bits.
 		s.refillAllocCache(whichByte)
 		aCache = s.allocCache
