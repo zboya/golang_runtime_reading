@@ -6,7 +6,9 @@
 * [github.com/golang/go](https://github.com/golang/go)
 
 ## 目标
-理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构
+理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构. 
+
+`对于注释不理解的，欢迎提issue`。
 
 ## 目前的进度
 * 2018-08-05 已阅读完调度系统的大概源码
@@ -17,6 +19,10 @@
 * 2018-09-09 正在阅读gc的大概源码
 * 2018-09-16 大概阅读完gc流程源码
 * 2018-09-24 开始详细阅读gc源码
+* 2018-10-13 理解mgc的注释和大概阅读gcStart
+* 2018-10-20 阅读gcMark准备和markroots扫描根对象的逻辑
+* 2018-10-27 阅读gc的栈扫描和消费标记队列
+
 
 ## 微信群
 ![wechat](./wechat.jpeg)  
