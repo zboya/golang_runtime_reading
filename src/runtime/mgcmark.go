@@ -1207,6 +1207,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 	// oblet, in which case we compute the size to scan below.
 	hbits := heapBitsForAddr(b)
 	s := spanOfUnchecked(b)
+	// 对象的大小
 	n := s.elemsize
 	if n == 0 {
 		throw("scanobject n == 0")
@@ -1320,6 +1321,7 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 	}
 	mbits := span.markBitsForIndex(objIndex)
 
+	// checkmark是用于检查是否所有可到达的对象都被正确标记的机制, 仅除错使用
 	if useCheckmark {
 		if !mbits.isMarked() {
 			printlock()
@@ -1352,13 +1354,16 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 		}
 
 		// If marked we have nothing to do.
+		// 如果对象所在的span中的gcmarkBits对应的bit已经设置为1则可以跳过处理
 		if mbits.isMarked() {
 			return
 		}
 		// mbits.setMarked() // Avoid extra call overhead with manual inlining.
+		// 设置对象所在的span中的gcmarkBits对应的bit为1
 		atomic.Or8(mbits.bytep, mbits.mask)
 		// If this is a noscan object, fast-track it to black
 		// instead of greying it.
+		// 如果确定对象不包含指针(所在span的类型是noscan), 则不需要把对象放入标记队列
 		if span.spanclass.noscan() {
 			gcw.bytesMarked += uint64(span.elemsize)
 			return

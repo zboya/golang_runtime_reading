@@ -6,7 +6,9 @@
 * [github.com/golang/go](https://github.com/golang/go)
 
 ## 目标
-理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构
+理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构. 
+
+`对于注释不理解的，欢迎提issue`。
 
 ## 目前的进度
 * 2018-08-05 已阅读完调度系统的大概源码
