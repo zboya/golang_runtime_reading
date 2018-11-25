@@ -3148,12 +3148,15 @@ func reentersyscall(pc, sp uintptr) {
 
 	// Disable preemption because during this function g is in Gsyscall status,
 	// but can have inconsistent g->sched, do not let GC observe it.
+	//禁用抢占，因为在此函数期间g处于Gsyscall状态，但可能具有不一致的g->sched，请不要让GC观察它
 	_g_.m.locks++
 
 	// Entersyscall must not call any function that might split/grow the stack.
 	// (See details in comment above.)
 	// Catch calls that might, by replacing the stack guard with something that
 	// will trip any stack check and leaving a flag to tell newstack to die.
+	// Entersyscall不得调用任何可能拆分/增长堆栈的函数。（请参阅上面的注释中的详细信息。）
+	// 通过将堆栈保护替换为任何堆栈检查并留下标志告诉newstack死亡，可能会捕获调用
 	_g_.stackguard0 = stackPreempt
 	_g_.throwsplit = true
 
@@ -3161,7 +3164,9 @@ func reentersyscall(pc, sp uintptr) {
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
+	// 让G进入_Gsyscall状态，此时G已经被挂起了，直到系统调用结束，才会让G重新写进入running
 	casgstatus(_g_, _Grunning, _Gsyscall)
+	// 检查栈是否超出
 	if _g_.syscallsp < _g_.stack.lo || _g_.stack.hi < _g_.syscallsp {
 		systemstack(func() {
 			print("entersyscall inconsistent ", hex(_g_.syscallsp), " [", hex(_g_.stack.lo), ",", hex(_g_.stack.hi), "]\n")
@@ -3169,6 +3174,7 @@ func reentersyscall(pc, sp uintptr) {
 		})
 	}
 
+	// 开启了 trace 打印信息
 	if trace.enabled {
 		systemstack(traceGoSysCall)
 		// systemstack itself clobbers g.sched.{pc,sp} and we might
@@ -3190,8 +3196,11 @@ func reentersyscall(pc, sp uintptr) {
 
 	_g_.m.syscalltick = _g_.m.p.ptr().syscalltick
 	_g_.sysblocktraced = true
+	// 这里很关键：P的M已经陷入系统调用，于是P忍痛放弃该M
+	// 但是请注意：此时M还指向P，在M从系统调用返回后还能找到P
 	_g_.m.mcache = nil
 	_g_.m.p.ptr().m = 0
+	// P的状态变为Psyscall
 	atomic.Store(&_g_.m.p.ptr().status, _Psyscall)
 	if sched.gcwaiting != 0 {
 		systemstack(entersyscall_gcwait)
@@ -3208,6 +3217,8 @@ func reentersyscall(pc, sp uintptr) {
 // Standard syscall entry used by the go syscall library and normal cgo calls.
 //go:nosplit
 // 系统调用的时候调用该函数
+// 进入系统调用，G将会进入_Gsyscall状态，也就是会被暂时挂起，直到系统调用结束。
+// 此时M进入系统调用，那么P也会放弃该M。但是，此时M还指向P，在M从系统调用返回后还能找到P
 func entersyscall(dummy int32) {
 	reentersyscall(getcallerpc(), getcallersp(unsafe.Pointer(&dummy)))
 }
@@ -3300,9 +3311,12 @@ func entersyscallblock_handoff() {
 //
 //go:nosplit
 //go:nowritebarrierrec
+// goroutine g退出系统调用。安排它再次在cpu上运行。
+// 这个函数只能从go syscall库中调用，而不是从运行时使用的低级系统调用中调用
 func exitsyscall(dummy int32) {
 	_g_ := getg()
 
+	// 和进入系统调用一样，禁用抢占
 	_g_.m.locks++ // see comment in entersyscall
 	if getcallersp(unsafe.Pointer(&dummy)) > _g_.syscallsp {
 		// throw calls print which may try to grow the stack,
@@ -3315,6 +3329,7 @@ func exitsyscall(dummy int32) {
 
 	_g_.waitsince = 0
 	oldp := _g_.m.p.ptr()
+	// 快速路径处理，判断
 	if exitsyscallfast() {
 		if _g_.m.mcache == nil {
 			systemstack(func() {
@@ -3329,6 +3344,8 @@ func exitsyscall(dummy int32) {
 		// There's a cpu for us, so we can run.
 		_g_.m.p.ptr().syscalltick++
 		// We need to cas the status and scan before resuming...
+		// g的状态从syscall变成running，这样M就可以找到这个g来运行，
+		// 正常来说，g很快就能被运行
 		casgstatus(_g_, _Gsyscall, _Grunning)
 
 		// Garbage collector isn't running (since we are),
@@ -3363,6 +3380,9 @@ func exitsyscall(dummy int32) {
 	_g_.m.locks--
 
 	// Call the scheduler.
+	// 前面就是努力获取一个 P 来执行 syscall 之后的逻辑。
+	// 如果哪都没有 P 可以给我们用，那就进入 exitsyscall0 了。
+	// 调用 exitsyscall0 时，会切换到 g0 栈。
 	mcall(exitsyscall0)
 
 	if _g_.m.mcache == nil {
@@ -3394,6 +3414,7 @@ func exitsyscallfast() bool {
 	}
 
 	// Try to re-acquire the last P.
+	// 如果之前附属的P尚未被其他M,尝试绑定该P
 	if _g_.m.p != 0 && _g_.m.p.ptr().status == _Psyscall && atomic.Cas(&_g_.m.p.ptr().status, _Psyscall, _Prunning) {
 		// There's a cpu for us, so we can run.
 		exitsyscallfast_reacquired()
@@ -3401,6 +3422,7 @@ func exitsyscallfast() bool {
 	}
 
 	// Try to get any other idle P.
+	// 否则从空闲P列表中取出一个来
 	oldp := _g_.m.p.ptr()
 	_g_.m.mcache = nil
 	_g_.m.p = 0
