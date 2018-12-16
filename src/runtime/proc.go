@@ -3216,6 +3216,11 @@ func reentersyscall(pc, sp uintptr) {
 
 // Standard syscall entry used by the go syscall library and normal cgo calls.
 //go:nosplit
+// syscall/asm_linux_amd64.s
+// 	TEXT	·Syscall(SB),NOSPLIT,$0-56
+// 		CALL	runtime·entersyscall(SB)
+// 		....
+//		CALL	runtime·exitsyscall(SB)
 // 系统调用的时候调用该函数
 // 进入系统调用，G将会进入_Gsyscall状态，也就是会被暂时挂起，直到系统调用结束。
 // 此时M进入系统调用，那么P也会放弃该M。但是，此时M还指向P，在M从系统调用返回后还能找到P

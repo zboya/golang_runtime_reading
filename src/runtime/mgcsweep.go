@@ -44,24 +44,29 @@ func finishsweep_m() {
 	nextMarkBitArenaEpoch()
 }
 
+// 后台清扫任务的函数
+// 清扫无用的白色对象
 func bgsweep(c chan int) {
 	sweep.g = getg()
 
 	lock(&sweep.lock)
 	sweep.parked = true
 	c <- 1
-	// 休眠
+	// 休眠，等待唤醒
 	goparkunlock(&sweep.lock, "GC sweep wait", traceEvGoBlock, 1)
 
 	for {
+		// 清扫一个span, 然后进入调度(一次只做少量工作)
 		for gosweepone() != ^uintptr(0) {
 			sweep.nbgsweep++
 			Gosched()
 		}
+		// 释放一些未使用的标记队列缓冲区到heap
 		for freeSomeWbufs(true) {
 			Gosched()
 		}
 		lock(&sweep.lock)
+		// 如果清扫未完成则继续循环
 		if !gosweepdone() {
 			// This can happen if a GC runs between
 			// gosweepone returning ^0 above
@@ -69,6 +74,7 @@ func bgsweep(c chan int) {
 			unlock(&sweep.lock)
 			continue
 		}
+		// 否则让后台清扫任务进入休眠, 当前M继续调度
 		sweep.parked = true
 		goparkunlock(&sweep.lock, "GC sweep wait", traceEvGoBlock, 1)
 	}

@@ -41,6 +41,9 @@ import (
 // free list.
 //
 // A Pool must not be copied after first use.
+// golang内建的GC机制会影响应用的性能，为了减少GC，golang提供了对象重用的机制，也就是sync.Pool对象池。
+// sync.Pool是可伸缩的，并发安全的。其大小仅受限于内存的大小，可以被看作是一个存放可重用对象的值的容器。
+// 设计的目的是存放已经分配的但是暂时不用的对象，在需要用到的时候直接从pool中取。
 type Pool struct {
 	noCopy noCopy
 
@@ -55,9 +58,11 @@ type Pool struct {
 
 // Local per-P Pool appendix.
 type poolLocalInternal struct {
-	private interface{}   // Can be used only by the respective P.
-	shared  []interface{} // Can be used by any P.
-	Mutex                 // Protects shared.
+	// p的私有对象
+	private interface{} // Can be used only by the respective P.
+	// 共享对象
+	shared []interface{} // Can be used by any P.
+	Mutex                // Protects shared.
 }
 
 type poolLocal struct {
@@ -85,6 +90,9 @@ func poolRaceAddr(x interface{}) unsafe.Pointer {
 }
 
 // Put adds x to the pool.
+// 如果放入的值为nil，直接return.
+// 检查当前goroutine的是否设置对象池私有值，如果没有则将x赋值给其私有成员，并将x设置为nil。
+// 如果当前goroutine私有值已经被设置，那么将该值追加到共享列表。
 func (p *Pool) Put(x interface{}) {
 	if x == nil {
 		return
@@ -121,6 +129,11 @@ func (p *Pool) Put(x interface{}) {
 //
 // If Get would otherwise return nil and p.New is non-nil, Get returns
 // the result of calling p.New.
+// 尝试从本地P对应的那个本地池中获取一个对象值, 并从本地池冲删除该值。
+// 如果获取失败，那么从本地共享池中获取, 并从本地共享队列中删除该值。
+// 如果获取失败，那么从其他P的共享池中偷一个过来，并删除共享池中的该值。
+// 如果仍然失败，那么直接通过New()分配一个返回值，注意这个分配的值不会被放入池中。
+// New()返回用户注册的New函数的值，如果用户未注册New，那么返回nil。
 func (p *Pool) Get() interface{} {
 	if race.Enabled {
 		race.Disable()
@@ -160,7 +173,7 @@ func (p *Pool) getSlow() (x interface{}) {
 	// Try to steal one element from other procs.
 	pid := runtime_procPin()
 	runtime_procUnpin()
-	for i := 0; i < int(size); i++ {
+	for i := 0; i < int(size); i++ { // 遍历其他P的缓存队列
 		l := indexLocal(local, (pid+i+1)%int(size))
 		l.Lock()
 		last := len(l.shared) - 1
@@ -244,6 +257,8 @@ var (
 )
 
 func init() {
+	// 可以看到在init的时候注册了一个PoolCleanup函数，他会清除掉sync.Pool中的所有的缓存的对象，
+	// 这个注册函数会在每次GC的时候运行，所以sync.Pool中的值只在两次GC中间的时段有效。
 	runtime_registerPoolCleanup(poolCleanup)
 }
 
