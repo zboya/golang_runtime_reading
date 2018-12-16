@@ -75,6 +75,7 @@ func netpoll(block bool) *g {
 	}
 	var events [128]epollevent
 retry:
+	// sys_linux_amd64.s
 	n := epollwait(epfd, &events[0], int32(len(events)), waitms)
 	if n < 0 {
 		if n != -_EINTR {

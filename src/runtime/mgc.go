@@ -290,6 +290,7 @@ func readgogc() int32 {
 // 有main调用，启动后台清扫程序
 func gcenable() {
 	c := make(chan int, 1)
+	// 后台清扫go程
 	go bgsweep(c)
 	<-c
 	memstats.enablegc = true // now that runtime is initialized, GC is okay
@@ -2267,11 +2268,13 @@ func gcMark(start_time int64) {
 	}
 }
 
+// 唤醒后台清扫任务
 func gcSweep(mode gcMode) {
 	if gcphase != _GCoff {
 		throw("gcSweep being done but phase is not GCoff")
 	}
 
+	// 增加sweepgen, 这样sweepSpans中两个队列角色会交换, 所有span都会变为"待清扫"的span
 	lock(&mheap_.lock)
 	mheap_.sweepgen += 2
 	mheap_.sweepdone = 0
@@ -2284,6 +2287,7 @@ func gcSweep(mode gcMode) {
 	mheap_.pagesSwept = 0
 	unlock(&mheap_.lock)
 
+	// 如果非并行GC则在这里完成所有工作(STW中)
 	if !_ConcurrentSweep || mode == gcForceBlockMode {
 		// Special case synchronous sweep.
 		// Record that no proportional sweeping has to happen.
@@ -2307,9 +2311,12 @@ func gcSweep(mode gcMode) {
 	}
 
 	// Background sweep.
+	// 唤醒后台清扫任务
 	lock(&sweep.lock)
 	if sweep.parked {
 		sweep.parked = false
+		// 更改 sweep.g 的状态为runable
+		// 这样就可以被M执行
 		ready(sweep.g, 0, true)
 	}
 	unlock(&sweep.lock)
