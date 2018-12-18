@@ -191,11 +191,14 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 	return markBits{bytep, mask, allocBitIndex}
 }
 
+// refillAllocCache 从whichByte处取 allocBits的8个bytes(64bit)
+// 并且取反以至于可以用ctz。然后把这8bytes放进allocCache中
 // refillaCache takes 8 bytes s.allocBits starting at whichByte
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
 func (s *mspan) refillAllocCache(whichByte uintptr) {
+	// 获取这8个bytes，这里主要是在做类型转换，实际的代码就是取一个数组地址
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)
 	aCache |= uint64(bytes[0])
@@ -206,17 +209,20 @@ func (s *mspan) refillAllocCache(whichByte uintptr) {
 	aCache |= uint64(bytes[5]) << (5 * 8)
 	aCache |= uint64(bytes[6]) << (6 * 8)
 	aCache |= uint64(bytes[7]) << (7 * 8)
-	s.allocCache = ^aCache
+	s.allocCache = ^aCache //这里取反，allocBit中1表示使用，allocCache中1表示未使用
 }
 
+// nextFreeIndex 返回下一个可用对象的index(是freeindex或在其后)
+// 有一些硬件指令可以优化这段代码，不用担心其性能
 // nextFreeIndex returns the index of the next free object in s at
 // or after s.freeindex.
 // There are hardware instructions that can be used to make this
 // faster if profiling warrants it.
 func (s *mspan) nextFreeIndex() uintptr {
+	// 拿到freeindex
 	sfreeindex := s.freeindex
 	snelems := s.nelems
-	if sfreeindex == snelems {
+	if sfreeindex == snelems { // 没有空闲的对象了
 		return sfreeindex
 	}
 	if sfreeindex > snelems {
@@ -226,14 +232,17 @@ func (s *mspan) nextFreeIndex() uintptr {
 	aCache := s.allocCache
 
 	bitIndex := sys.Ctz64(aCache)
-	for bitIndex == 64 {
+	for bitIndex == 64 { //allocCache为0，没有一个空闲对象，说么要更新一下allocCache了
 		// Move index to start of next cached bits.
+		// 找到下一个缓存的地址。这个是吧sfreeindex取向上64的倍数
 		sfreeindex = (sfreeindex + 64) &^ (64 - 1)
 		if sfreeindex >= snelems {
+			// 说明真的没了
 			s.freeindex = snelems
 			return snelems
 		}
-		whichByte := sfreeindex / 8
+		// 只是缓存的值不行了，更新一下allocCache就好
+		whichByte := sfreeindex / 8 // sfreeindex是64的倍数,不需要担心整除的问题
 		// Refill s.allocCache with the next 64 alloc bits.
 		s.refillAllocCache(whichByte)
 		aCache = s.allocCache
@@ -838,6 +847,22 @@ func (s *mspan) countAlloc() int {
 	return count
 }
 
+// heapBitsSetType 记录了新分配的内存[x,x+size]适用于[x,x+dataSize)一个或多个值
+// （这段区域可以有一个value，也可以有多个values即slice，当然了，类型都是tpy）
+// 对象个数为dataSzie/tpy.szie
+// 如果dataSize<size,[x+dataSize,x+size]不含指针，gc只需扫描[x,x+dataSize]
+// 我们知道这个tpy含有指针，如果不含指针（noscan）是不会调用这个函数的
+//
+// 一个激活的span同一时刻只能有一个allocation（不用考虑并发问题？）
+// span的bitmap总是对齐的
+// 因此对于访问堆bitmap是没有“write-write”竞争的
+// 因此，这个函数无需加锁
+// 然而，还是有可能出现write-read竞争，比如gc的scan
+// 但是，heapBitsSetType的目标对象都unreachable的，reader会忽略对应的bitmap
+// 这意味着这个函数不能瞬间更改相邻对象的object。此外，在一个弱内存模型的机器上，
+// 调用者必须在调用heapBitsSetTpy和标记对象可到达之间设置store/store屏障，
+// 这样做防止gc把对象回收。
+
 // heapBitsSetType records that the new allocation [x, x+size)
 // holds in [x, x+dataSize) one or more values of type typ.
 // (The number of values is given by dataSize / typ.size.)
@@ -863,7 +888,11 @@ func (s *mspan) countAlloc() int {
 // between calling this function and making the object reachable.
 func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {
 	const doubleCheck = false // slow but helpful; enable to test modifications to this code
-
+	// dataSize总是向上取入到下一个malloc size class（即span的那几个规格）
+	// 除了在分配defer block的情况，这种情况下size=sizeof(_defer{})至少6歌words
+	// 而且dataSze可以任意大
+	// 因此检查 size == sys.PtrSize and size == 2*sys.PtrSize可以
+	// 假设dataSize == size（而不需要对其特别检查）
 	// dataSize is always size rounded up to the next malloc size class,
 	// except in the case of allocating a defer block, in which case
 	// size is sizeof(_defer{}) (at least 6 words) and dataSize may be
@@ -873,6 +902,10 @@ func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {
 	// assume that dataSize == size without checking it explicitly.
 
 	if sys.PtrSize == 8 && size == sys.PtrSize {
+		// 大小只有一个word且含指针，那么他一定是一个指针
+		// 即然one-word大小的对象都是指针（不是指针的在tinyalloc里面）
+		// initSpan已经设置了bitmap，不需要做什么事
+		// 规格为8且为scan的span对应的bitmap全都是指针，这里不需要设置了
 		// It's one word and it has pointers, it must be a pointer.
 		// Since all allocated one-word objects are pointers
 		// (non-pointers are aggregated into tinySize allocations),
@@ -888,10 +921,13 @@ func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {
 		}
 		return
 	}
-
+	// 获取对应的bitmap区域
 	h := heapBitsForAddr(x)
 	ptrmask := typ.gcdata // start of 1-bit pointer mask (or GC program, handled below)
 
+	// 2-word大小的对象对应的bitmap区域只有4bits
+	// 因此还和下一个对象共享（64位一次操作要64个bit）
+	// 32位系统特殊考虑
 	// Heap bitmap bits for 2-word object are only 4 bits,
 	// so also shared with objects next to it.
 	// This is called out as a special case primarily for 32-bit systems,
@@ -899,6 +935,10 @@ func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {
 	// are 4-word aligned (because they're all 16-byte aligned).
 	if size == 2*sys.PtrSize {
 		if typ.size == sys.PtrSize {
+			// 我们在64位系统中正在分配一个足够持有2个指针的区域，这意味着这个对象一定
+			// 是两个指针，否则我们会使用one-pointer-sized 块(???为什么/)
+			// 这段应该是注释错误，type A struct {a int64,b int64} 还是会走到这一步
+			// 可以在runtime加print进行调试，发现new(A)会走到这里
 			// We're allocating a block big enough to hold two pointers.
 			// On 64-bit, that means the actual object must be two pointers,
 			// or else we'd have used the one-pointer-sized block.
@@ -913,7 +953,9 @@ func heapBitsSetType(x, size, dataSize uintptr, typ *_type) {
 				*h.bitp &^= (bitPointer | bitScan | ((bitPointer | bitScan) << heapBitsShift)) << h.shift
 				*h.bitp |= (bitPointer | bitScan) << h.shift
 			} else {
+				// new(A)也会走到这里
 				// 2-element slice of pointer.
+				// 把这一位设置为0或者1,
 				*h.bitp |= (bitPointer | bitScan | bitPointer<<heapBitsShift) << h.shift
 			}
 			return
