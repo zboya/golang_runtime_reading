@@ -222,6 +222,8 @@ func Handler(name string) http.Handler {
 
 type handler string
 
+// /debug/pprof/ 的处理函数，比如 /debug/pprof/heap，
+// 那么name=heap，通过pprof.Lookup(string(name))找到对应的Profile
 func (name handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	p := pprof.Lookup(string(name))

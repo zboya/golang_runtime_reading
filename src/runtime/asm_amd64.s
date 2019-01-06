@@ -269,6 +269,7 @@ ok:
 	MOVQ	CX, g(BX)
 	LEAQ	runtime·m0(SB), AX
 
+	// m0和g0互相绑定
 	// save m->g0 = g0
 	MOVQ	CX, m_g0(AX)
 	// save m0 to g0->m

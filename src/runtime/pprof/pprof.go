@@ -144,6 +144,7 @@ var threadcreateProfile = &Profile{
 	write: writeThreadCreate,
 }
 
+// 内存分配的统计分析
 var heapProfile = &Profile{
 	name:  "heap",
 	count: countHeap,
