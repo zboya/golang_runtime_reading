@@ -204,7 +204,7 @@ func (s *mspan) sweep(preserve bool) bool {
 
 	atomic.Xadd64(&mheap_.pagesSwept, int64(s.npages))
 
-	spc := s.spanclass
+	spc := s.spanclass // 内存块规格
 	size := s.elemsize
 	res := false
 

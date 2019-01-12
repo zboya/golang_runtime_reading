@@ -219,23 +219,21 @@ type mSpanList struct {
 }
 
 //go:notinheap
+// 代表一个内存块
 type mspan struct {
+	// 双向链表
 	next *mspan     // next span in list, or nil if none
 	prev *mspan     // previous span in list, or nil if none
 	list *mSpanList // For debugging. TODO: Remove.
 
+	// 起始地址
 	startAddr uintptr // address of first byte of span aka s.base()
-	npages    uintptr // number of pages in span
+	// 页数
+	npages uintptr // number of pages in span
 
+	// 待分配的 object 链表
 	manualFreeList gclinkptr // list of free objects in _MSpanManual spans
-	// freeindex 在0-nelems之间，代表了查找空闲对象的起点。
-	// 每次分配都会从freeindex开始扫描allocBits直到它为0(allocBits的第x位)，意味着这里是(x)空闲对象
-	// freeindex 调节以使以后的扫描从新发现的freeobject开始。
-	// 如果freeindex==nelem 说明没有空闲对象了
-	// allocBits是对象的bitmap
-	// 如果n>=freeindex而且allocBits[n/8]&(1<<(n%8))为0，(即allocBits的第n位为0)
-	// 否则，n是已经分配的。nelem后的Bits未定义的，不应该被引用
-	// object n 的起使内存是 n*elemsize+(start<<pageShift)  (span起使内存+对象偏移)
+
 	// freeindex is the slot index between 0 and nelems at which to begin scanning
 	// for the next free object in this span.
 	// Each allocation scans allocBits starting at freeindex until it encounters a 0
@@ -251,6 +249,15 @@ type mspan struct {
 	// undefined and should never be referenced.
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
+	//
+	// freeindex 在0-nelems之间，代表了查找空闲对象的起点。
+	// 每次分配都会从freeindex开始扫描allocBits直到它为0(allocBits的第x位)，意味着这里是(x)空闲对象
+	// freeindex 调节以使以后的扫描从新发现的freeobject开始。
+	// 如果freeindex==nelem 说明没有空闲对象了
+	// allocBits是对象的bitmap
+	// 如果n>=freeindex而且allocBits[n/8]&(1<<(n%8))为0，(即allocBits的第n位为0)
+	// 否则，n是已经分配的。nelem后的Bits未定义的，不应该被引用
+	// object n 的起使内存是 n*elemsize+(start<<pageShift)  (span起使内存+对象偏移)
 	freeindex uintptr
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
@@ -289,8 +296,8 @@ type mspan struct {
 	// The sweep will free the old allocBits and set allocBits to the
 	// gcmarkBits. The gcmarkBits are replaced with a fresh zeroed
 	// out memory.
-	allocBits  *gcBits
-	gcmarkBits *gcBits
+	allocBits  *gcBits // 分配位图; 对应的内存块object使用情况
+	gcmarkBits *gcBits // 标记位图; 对应的object标记为垃圾 等待清理
 
 	// sweep generation:
 	// if sweepgen == h->sweepgen - 2, the span needs sweeping

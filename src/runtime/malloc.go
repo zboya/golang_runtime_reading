@@ -103,6 +103,7 @@ const (
 
 	concurrentSweep = _ConcurrentSweep
 
+	// glang内存页的大小，8K
 	_PageSize = 1 << _PageShift
 	_PageMask = _PageSize - 1
 
@@ -278,9 +279,9 @@ func mallocinit() {
 	var bitmapSize uintptr = (_MaxMem + 1) / (sys.PtrSize * 8 / 2)
 	bitmapSize = round(bitmapSize, _PageSize)
 
-	// 设置arena区域，分配的数据在一段连续点内存中？？？
 	// Set up the allocation arena, a contiguous area of memory where
 	// allocated data will be found.
+	// 设置arena区域，分配的数据在一段连续内存中？？？
 	if sys.PtrSize == 8 {
 		// 64位机器，从一段连续的预留空间分配
 		// 512g 足够了
@@ -659,6 +660,14 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
 // mallocgc是从堆中分配对象，并根据情况触发gc
+// 在分析内存分配器这部分源码的时候，首先需要明确的是所有内存分配的入口，
+// 有了入口就可以从这里作为起点一条线的看下去，不会有太大的障碍。
+// 这个入口就是malloc.go源文件中的runtime·mallocgc函数，
+// 这个入口函数的主要工作就是分配内存以及触发gc(本文将只介绍内存分配)，
+// 在进入真正的分配内存之前，此入口函数还会判断请求的是小内存分配还是大内存分配(32k作为分界线)；
+// 小内存分配将调用runtime·MCache_Alloc函数从Cache获取，而大内存分配调用runtime·MHeap_Alloc直接从Heap获取。
+// 入口函数过后，就会真正的进入到具体的内存分配过程中去了。
+// 原文：https://blog.csdn.net/lengyuezuixue/article/details/79651769
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")

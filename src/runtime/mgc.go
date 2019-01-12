@@ -1346,6 +1346,57 @@ func (t gcTrigger) test() bool {
 // 灰色的对象在它所在的span的gcmarkBits中对应的bit为1, 并且对象在标记队列中,
 // 黑色的对象在它所在的span的gcmarkBits中对应的bit为1, 并且对象已经从标记队列中取出并处理.
 // gc完成后, gcmarkBits会移动到allocBits然后重新分配一个全部为0的bitmap, 这样黑色的对象就变为了白色.
+//
+/*
+                                 gcStart
+                                   |
+                               STOP_WORLD          // stop world，主要是一些准备工作，比如 enable write barrier
+                                   |
+                           setGCPhase(_GCmark)     // 设置gc阶段为_GCmark，同时启用写屏障，写屏障只针对指针启用, 只在GC的标记阶段启用
+                                   |
+                           gcBgMarkPrepare()       // 重置后台标记任务的计数
+                                   |
+                           gcMarkRootPrepare()     // 计算扫描根对象的任务数量
+                                   |
+                           gcMarkTinyAllocs()      // 标记所有tiny alloc等待合并的对象
+                                   |
+                               START_WORLD         // 启动世界
+                                   |
+                           gcBgMarkStartWorkers    // 启动并发标记
+                                   |
+                               gcBgMarkWorker      // 后台标记函数
+                                   |
+                               gcDrain             // 消费标记队列
+                                   |
+                               markroot            // 标记跟对象
+                                   |
+                                 scang             // 扫描goroutine，保证该G不是在运行中
+                                   |
+                               scanstack           // 扫描该G的栈
+                                   |
+                               scanblock           // 通用的扫描函数, 扫描全局变量和栈空间都会用它
+                                   |
+                               greyobject          // 标记对象存活, 并把它加到标记队列
+                                   |
+                               scanobject          // 消费标记队列
+                                   |
+   gcenable                    gcMarkDone          // 准备进入完成标记阶段
+       |                           |
+       |                        STOP_WORLD         // re-scan 过程。如果这个时候没有stw，那么mark将无休止。
+       |                           |
+       |                    gcMarkTermination      // 进入完成标记阶段
+       |                           |
+   bgsweep // 并发后台清扫任务的函数   |
+       |                    setGCPhase(_GCoff)     // 设置gc阶段为_GCoff
+       |                           |
+       |                   gcSetTriggerRatio()     // 更新下一次触发gc需要的heap大小(gc_trigger)
+       |                           |
+       |                        gcSweep            // 唤醒后台清扫任务
+       |                           |
+       +--------------------- START_WORLD          // 启动世界
+       |
+   gosweepone // 清扫无用的对象（白色对象）
+*/
 func gcStart(mode gcMode, trigger gcTrigger) {
 	// Since this is called from malloc and malloc is called in
 	// the guts of a number of libraries that might be holding

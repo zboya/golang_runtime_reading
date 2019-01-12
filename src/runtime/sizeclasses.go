@@ -72,6 +72,7 @@ package runtime
 //    66      32768       32768        1           0     12.50%
 
 const (
+	// 大小对象的边界值，<=32k，为小对象，否则为大对象
 	_MaxSmallSize   = 32768
 	smallSizeDiv    = 8
 	smallSizeMax    = 1024
