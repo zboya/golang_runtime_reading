@@ -30,6 +30,7 @@ type sweepdata struct {
 // progress.
 //
 //go:nowritebarrier
+// 清扫上一轮GC未清扫的span, 确保上一轮GC已完成
 func finishsweep_m() {
 	// Sweeping must be complete before marking commences, so
 	// sweep any unswept spans. If this is a concurrent GC, there
@@ -43,23 +44,29 @@ func finishsweep_m() {
 	nextMarkBitArenaEpoch()
 }
 
+// 后台清扫任务的函数
+// 清扫无用的白色对象
 func bgsweep(c chan int) {
 	sweep.g = getg()
 
 	lock(&sweep.lock)
 	sweep.parked = true
 	c <- 1
+	// 休眠，等待唤醒
 	goparkunlock(&sweep.lock, "GC sweep wait", traceEvGoBlock, 1)
 
 	for {
+		// 清扫一个span, 然后进入调度(一次只做少量工作)
 		for gosweepone() != ^uintptr(0) {
 			sweep.nbgsweep++
 			Gosched()
 		}
+		// 释放一些未使用的标记队列缓冲区到heap
 		for freeSomeWbufs(true) {
 			Gosched()
 		}
 		lock(&sweep.lock)
+		// 如果清扫未完成则继续循环
 		if !gosweepdone() {
 			// This can happen if a GC runs between
 			// gosweepone returning ^0 above
@@ -67,6 +74,7 @@ func bgsweep(c chan int) {
 			unlock(&sweep.lock)
 			continue
 		}
+		// 否则让后台清扫任务进入休眠, 当前M继续调度
 		sweep.parked = true
 		goparkunlock(&sweep.lock, "GC sweep wait", traceEvGoBlock, 1)
 	}
@@ -75,6 +83,7 @@ func bgsweep(c chan int) {
 // sweeps one span
 // returns number of pages returned to heap, or ^uintptr(0) if there is nothing to sweep
 //go:nowritebarrier
+// 清扫一个span，并返回清扫的page的个数
 func sweepone() uintptr {
 	_g_ := getg()
 	sweepRatio := mheap_.sweepPagesPerByte // For debugging
@@ -195,7 +204,7 @@ func (s *mspan) sweep(preserve bool) bool {
 
 	atomic.Xadd64(&mheap_.pagesSwept, int64(s.npages))
 
-	spc := s.spanclass
+	spc := s.spanclass // 内存块规格
 	size := s.elemsize
 	res := false
 
@@ -370,6 +379,16 @@ func (s *mspan) sweep(preserve bool) bool {
 	return res
 }
 
+// deductSweepCredit 对要分配的span进行扣除扫信贷.这必须在span分配之前进行
+// 以确保系统有足够的贷款。如果有必要，还会进行清扫工作防止陷入债务危机。
+// 如果调用者也扫描页(比如large allocation)，他会传入一个人非空的"调用者清扫页"
+// 而留下许多未清扫的页
+//
+// deductSweepCredit做了最坏的打算以便最终分配的span中所有的span bytes可以用于
+// 对象分配
+//
+// deductSweepCredit是 "比例清楚" 系统的核心。他用了gc收集的统计数据来保证足够
+// 的清扫以便所有的pages在两个gc之间的并发清扫阶段可以被清理
 // deductSweepCredit deducts sweep credit for allocating a span of
 // size spanBytes. This must be performed *before* the span is
 // allocated to ensure the system has enough credit. If necessary, it

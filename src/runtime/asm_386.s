@@ -328,7 +328,7 @@ TEXT runtime·breakpoint(SB),NOSPLIT,$0-0
 	RET
 
 TEXT runtime·asminit(SB),NOSPLIT,$0-0
-	// Linux and MinGW start the FPU in extended double precision.
+	// Linux and MinGW start the FPU in extended double precision. double precision 双精度
 	// Other operating systems use double precision.
 	// Change to double precision to match them,
 	// and to match other hardware that only has double.

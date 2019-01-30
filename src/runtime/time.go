@@ -135,9 +135,11 @@ func addtimer(t *timer) {
 // Add a timer to the heap and start or kick timerproc if the new timer is
 // earlier than any of the others.
 // Timers are locked.
+// 增加一个定时器到堆中并开始或者删掉timeproc如果新的定时器早于任何定时器的话
 func (tb *timersBucket) addtimerLocked(t *timer) {
 	// when must never be negative; otherwise timerproc will overflow
 	// during its delta calculation and never expire other runtime timers.
+	// when 必须不能是负值，否则的话 timeproc将会溢出
 	if t.when < 0 {
 		t.when = 1<<63 - 1
 	}
@@ -148,6 +150,7 @@ func (tb *timersBucket) addtimerLocked(t *timer) {
 		// siftup moved to top: new earliest deadline.
 		if tb.sleeping {
 			tb.sleeping = false
+			// 唤醒睡眠中的goroutine
 			notewakeup(&tb.waitnote)
 		}
 		if tb.rescheduling {
@@ -155,6 +158,7 @@ func (tb *timersBucket) addtimerLocked(t *timer) {
 			goready(tb.gp, 0)
 		}
 	}
+	// 只运行一次timeproc()
 	if !tb.created {
 		tb.created = true
 		go timerproc(tb)
@@ -202,14 +206,20 @@ func deltimer(t *timer) bool {
 // Timerproc runs the time-driven events.
 // It sleeps until the next event in the tb heap.
 // If addtimer inserts a new earlier event, it wakes timerproc early.
+// Timeproc 运行时间驱动的事件
+// 它会一直睡眠直到下一个事件进入了定时器的堆中
+// 如果 addtimer 插入了一个更早的事件， addtimerLocked 将会更早地唤醒timeproc
 func timerproc(tb *timersBucket) {
+	// 设置定时器goroutine
 	tb.gp = getg()
 	for {
 		lock(&tb.lock)
 		tb.sleeping = false
 		now := nanotime()
 		delta := int64(-1)
+		// 从堆的[0]开始迭代定时器
 		for {
+			// 已经没有其他的定时器了，退出迭代循环
 			if len(tb.t) == 0 {
 				delta = -1
 				break
@@ -219,6 +229,7 @@ func timerproc(tb *timersBucket) {
 			if delta > 0 {
 				break
 			}
+			// t.period 意味着它是一个ticker，所以改变 when 并移到堆的下方，经过t.period再执行
 			if t.period > 0 {
 				// leave in heap but adjust next time to fire
 				t.when += t.period * (1 + -delta/t.period)
@@ -244,9 +255,11 @@ func timerproc(tb *timersBucket) {
 			if raceenabled {
 				raceacquire(unsafe.Pointer(t))
 			}
+			// 无锁调用f，一般来说就是sendTime，发送一个事件
 			f(arg, seq)
 			lock(&tb.lock)
 		}
+		// 如果 delta < 0 - 定时器为空，设成 “rescheduling” 并暂停定时器goroutine。它将会一直睡眠直到在 addtimerLocked 中调用 "goready"
 		if delta < 0 || faketime > 0 {
 			// No timers left - put goroutine to sleep.
 			tb.rescheduling = true
@@ -254,6 +267,8 @@ func timerproc(tb *timersBucket) {
 			continue
 		}
 		// At least one timer pending. Sleep until then.
+		// 至少还有一个定时器未结束，睡眠直到结束
+		// 如果在堆中还有一些定时器，那么会一直睡眠直到最快的时间到了
 		tb.sleeping = true
 		tb.sleepUntil = now + delta
 		noteclear(&tb.waitnote)

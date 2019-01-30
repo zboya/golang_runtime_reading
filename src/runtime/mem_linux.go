@@ -180,11 +180,21 @@ func sysFault(v unsafe.Pointer, n uintptr) {
 	mmap(v, n, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE|_MAP_FIXED, -1, 0)
 }
 
+// sysReserve 预留一段内存(未分配),如果参数非空，说么调用者希望从这里开始预留，
+// 但是sysReserve 仍然可以选择另一个位置如果希望的位置不可用，
+// 有些os上某些情况 sysReserve 仅仅检查位置是否可用而并不真正的预留它，
+// 当sysReserve返回非空时，如果这段内存预留了，它会设置 *reserved为true；
+// 否则设置为false，这意味着仅仅做了检查，没有预留
+// 注意：SysReserve 返回OS对齐的内存，但堆分配器可能使用更大的对齐，
+// 因此编码器必须小心重新调整 sysAlloc 获取的内存。
 func sysReserve(v unsafe.Pointer, n uintptr, reserved *bool) unsafe.Pointer {
 	// On 64-bit, people with ulimit -v set complain if we reserve too
 	// much address space. Instead, assume that the reservation is okay
 	// if we can reserve at least 64K and check the assumption in SysMap.
 	// Only user-mode Linux (UML) rejects these requests.
+	// 在64位上，如果我们保留了太多地址空间，那么ulimit -v设置的人会抱怨。
+	// 相反，如果我们可以保留至少64K并在SysMap中检查假设，则假设保留是可以的。
+	// 只有用户模式Linux（UML）拒绝这些请求。
 	if sys.PtrSize == 8 && uint64(n) > 1<<32 {
 		p, err := mmap_fixed(v, 64<<10, _PROT_NONE, _MAP_ANON|_MAP_PRIVATE, -1, 0)
 		if p != v || err != 0 {

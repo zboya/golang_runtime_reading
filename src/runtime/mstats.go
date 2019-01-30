@@ -21,26 +21,39 @@ import (
 //
 // Many of these fields are updated on the fly, while others are only
 // updated when updatememstats is called.
+// 内存状态统计和MemStats的匹配的，可以将mstats直接转换成MemStats
 type mstats struct {
 	// General statistics.
-	alloc       uint64 // bytes allocated and not yet freed
+	// 当前分配的object内存，包含未回收的对象
+	alloc uint64 // bytes allocated and not yet freed
+	// 历史累计分配的总内存
 	total_alloc uint64 // bytes allocated (even if freed)
-	sys         uint64 // bytes obtained from system (should be sum of xxx_sys below, no locking, approximate)
-	nlookup     uint64 // number of pointer lookups
-	nmalloc     uint64 // number of mallocs
-	nfree       uint64 // number of frees
+	// 当前从系统申请的内存数，但是不包括已经释放的内存
+	sys uint64 // bytes obtained from system (should be sum of xxx_sys below, no locking, approximate)
+	// 运行时指针查找的个数
+	nlookup uint64 // number of pointer lookups
+	// malloc 分配内存的次数
+	nmalloc uint64 // number of mallocs
+	// 释放内存的次数
+	nfree uint64 // number of frees
 
 	// Statistics about malloc heap.
 	// Protected by mheap.lock
 	//
 	// Like MemStats, heap_sys and heap_inuse do not count memory
 	// in manually-managed spans.
-	heap_alloc    uint64 // bytes allocated and not yet freed (same as alloc above)
-	heap_sys      uint64 // virtual address space obtained from system for GC'd heap
-	heap_idle     uint64 // bytes in idle spans
-	heap_inuse    uint64 // bytes in _MSpanInUse spans
+	// 和上面的alloc一样
+	heap_alloc uint64 // bytes allocated and not yet freed (same as alloc above)
+	// 从操作系统获取的内存，不包括已释放
+	heap_sys uint64 // virtual address space obtained from system for GC'd heap
+	// 闲置的span内存
+	heap_idle uint64 // bytes in idle spans
+	// 正在使用的span内存
+	heap_inuse uint64 // bytes in _MSpanInUse spans
+	// 当前已归还操作系统系统的内存
 	heap_released uint64 // bytes released to the os
-	heap_objects  uint64 // total number of allocated objects
+	// 正在使用的对象数量，不包含闲置链表
+	heap_objects uint64 // total number of allocated objects
 
 	// TODO(austin): heap_released is both useless and inaccurate
 	// in its current form. It's useless because, from the user's
@@ -150,9 +163,13 @@ type mstats struct {
 	// GC. After mark termination, heap_live == heap_marked, but
 	// unlike heap_live, heap_marked does not change until the
 	// next mark termination.
+	// 表示上次GC被标记的字节数
+	// 在mark termination后， heap_live == heap_marked，但不像heap_live
+	// heap_marked不会更改直到 mark termination 阶段。
 	heap_marked uint64
 }
 
+// 内存状态统计的全局变量
 var memstats mstats
 
 // A MemStats records statistics about the memory allocator.

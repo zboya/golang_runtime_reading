@@ -311,6 +311,7 @@ func stackcache_clear(c *mcache) {
 // resources and must not split the stack.
 //
 //go:systemstack
+// 分配nbytes的栈
 func stackalloc(n uint32) stack {
 	// Stackalloc must be called on scheduler stack, so that we
 	// never try to grow the stack during the code that stackalloc runs.
@@ -1075,19 +1076,32 @@ func nilfunc() {
 
 // adjust Gobuf as if it executed a call to fn
 // and then did an immediate gosave.
+// 调节go运行现场的调用函数，然后
 func gostartcallfn(gobuf *gobuf, fv *funcval) {
 	var fn unsafe.Pointer
-	if fv != nil {
+	// 判断fv是否为nil
+	if fv != nil { // 不是nil
 		fn = unsafe.Pointer(fv.fn)
-	} else {
+	} else { // 是nil就用nilfunc
 		fn = unsafe.Pointer(funcPC(nilfunc))
 	}
+	// sys_x86.go
 	gostartcall(gobuf, fn, unsafe.Pointer(fv))
 }
 
 // Maybe shrink the stack being used by gp.
 // Called at garbage collection time.
 // gp must be stopped, but the world need not be.
+// 收缩栈是在mgcmark.go中触发的，主要是在scanstack和markrootFreeGStacks函数中，也就是垃圾回收的时候会根据情况收缩栈
+// shrinkstack 收缩栈在必要的时候
+// 如果这个g是Gdead状态，则会释放栈空间
+// 如果已经使用的栈空间大于总栈空间的1/4，则不进行栈收缩，如果是在正在进行系统调用也不能进行栈缩放，因为system使用的参数可能在栈上面。
+// 缩小栈的空间为原来的一半
+// ---------------------
+// 作者：sydnash
+// 来源：CSDN
+// 原文：https://blog.csdn.net/sydnash/article/details/70263924
+// 版权声明：本文为博主原创文章，转载请附上博文链接！
 func shrinkstack(gp *g) {
 	gstatus := readgstatus(gp)
 	if gstatus&^_Gscan == _Gdead {

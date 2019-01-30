@@ -84,7 +84,34 @@ GLOBL _rt0_amd64_lib_argc<>(SB),NOPTR, $8
 DATA _rt0_amd64_lib_argv<>(SB)/8, $0
 GLOBL _rt0_amd64_lib_argv<>(SB),NOPTR, $8
 
+/*
+go程序的入口点是runtime.rt0_go, 流程是:
+
+分配栈空间, 需要2个本地变量+2个函数参数, 然后向8对齐
+把传入的argc和argv保存到栈上
+更新g0中的stackguard的值, stackguard用于检测栈空间是否不足, 需要分配新的栈空间
+获取当前cpu的信息并保存到各个全局变量
+调用_cgo_init如果函数存在
+初始化当前线程的TLS, 设置FS寄存器为m0.tls+8(获取时会-8)
+测试TLS是否工作
+设置g0到TLS中, 表示当前的g是g0
+设置m0.g0 = g0
+设置g0.m = m0
+调用runtime.check做一些检查
+调用runtime.args保存传入的argc和argv到全局变量
+调用runtime.osinit根据系统执行不同的初始化
+这里(linux x64)设置了全局变量ncpu等于cpu核心数量
+调用runtime.schedinit执行共同的初始化
+这里的处理比较多, 会初始化栈空间分配器, GC, 按cpu核心数量或GOMAXPROCS的值生成P等
+生成P的处理在procresize中
+调用runtime.newproc创建一个新的goroutine, 指向的是runtime.main
+runtime.newproc这个函数在创建普通的goroutine时也会使用, 在下面的"go的实现"中会详细讲解
+调用runtime·mstart启动m0
+启动后m0会不断从运行队列获取G并运行, runtime.mstart调用后不会返回
+*/
+
 TEXT runtime·rt0_go(SB),NOSPLIT,$0
+	// 处理arg
 	// copy arguments forward on an even stack
 	MOVQ	DI, AX		// argc
 	MOVQ	SI, BX		// argv
@@ -93,6 +120,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	MOVQ	AX, 16(SP)
 	MOVQ	BX, 24(SP)
 	
+	// 创建系统的栈
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
 	MOVQ	$runtime·g0(SB), DI
@@ -102,6 +130,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT,$0
 	MOVQ	BX, (g_stack+stack_lo)(DI)
 	MOVQ	SP, (g_stack+stack_hi)(DI)
 
+	// 查找关于cpu的信息
 	// find out information about the processor we're on
 	MOVL	$0, AX
 	CPUID
@@ -229,12 +258,18 @@ needtls:
 	JEQ 2(PC)
 	MOVL	AX, 0	// abort
 ok:
+
+	// 程序刚启动的时候必定有一个线程启动（主线程）
+	// 将当前的栈和资源保存在g0
+	// 将该线程保存在m0
+	// tls: Thread Local Storage
 	// set the per-goroutine and per-mach "registers"
 	get_tls(BX)
 	LEAQ	runtime·g0(SB), CX
 	MOVQ	CX, g(BX)
 	LEAQ	runtime·m0(SB), AX
 
+	// m0和g0互相绑定
 	// save m->g0 = g0
 	MOVQ	CX, m_g0(AX)
 	// save m0 to g0->m
@@ -247,10 +282,12 @@ ok:
 	MOVL	AX, 0(SP)
 	MOVQ	24(SP), AX		// copy argv
 	MOVQ	AX, 8(SP)
-	CALL	runtime·args(SB)
-	CALL	runtime·osinit(SB)
-	CALL	runtime·schedinit(SB)
+	
+	CALL	runtime·args(SB) // 处理args
+	CALL	runtime·osinit(SB) // os初始化， os_linux.go
+	CALL	runtime·schedinit(SB) // 调度系统初始化, proc.go
 
+	// 创建一个goroutine，然后开启执行程序
 	// create a new goroutine to start program
 	MOVQ	$runtime·mainPC(SB), AX		// entry
 	PUSHQ	AX
@@ -260,6 +297,7 @@ ok:
 	POPQ	AX
 
 	// start this M
+	// 启动线程，并且启动调度系统
 	CALL	runtime·mstart(SB)
 
 	MOVL	$0xf1, 0xf1  // crash
@@ -302,6 +340,7 @@ TEXT runtime·gosave(SB), NOSPLIT, $0-8
 
 // void gogo(Gobuf*)
 // restore state from Gobuf; longjmp
+// 从g0栈切换到G栈，然后JMP到任务函数代码
 TEXT runtime·gogo(SB), NOSPLIT, $16-8
 	MOVQ	buf+0(FP), BX		// gobuf
 	MOVQ	gobuf_g(BX), DX
@@ -316,7 +355,7 @@ TEXT runtime·gogo(SB), NOSPLIT, $16-8
 	MOVQ	$0, gobuf_ret(BX)
 	MOVQ	$0, gobuf_ctxt(BX)
 	MOVQ	$0, gobuf_bp(BX)
-	MOVQ	gobuf_pc(BX), BX
+	MOVQ	gobuf_pc(BX), BX  // 获取G任务函数的地址
 	JMP	BX
 
 // func mcall(fn func(*g))
