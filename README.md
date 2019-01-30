@@ -1,44 +1,70 @@
-# The Go Programming Language
+# 初定方案
+**有任何理解错误的地方，还望指出**
 
-Go is an open source programming language that makes it easy to build simple,
-reliable, and efficient software.
+## golang官网
+* [golang.org](https://golang.org)
+* [github.com/golang/go](https://github.com/golang/go)
 
-![Gopher image](doc/gopher/fiveyears.jpg)
-*Gopher image by [Renee French][rf], licensed under [Creative Commons 3.0 Attributions license][cc3-by].*
+## 目标
+理解golang runtime的运行原理，重点掌握golang的调度，gc，内存分配，数据结构. 
 
-Our canonical Git repository is located at https://go.googlesource.com/go.
-There is a mirror of the repository at https://github.com/golang/go.
+`对于注释不理解的，欢迎提issue`。
 
-Unless otherwise noted, the Go source files are distributed under the
-BSD-style license found in the LICENSE file.
+## 目前的进度
+* 2018-08-05 已阅读完调度系统的大概源码
+* 2018-08-12 正在仔细阅读调度的源码
+* 2018-08-19 正在仔细阅读调度的源码
+* 2018-08-27 正在仔细阅读调度的源码
+* 2018-09-02 已仔细阅读完调度的源码，正在阅读gc的大概源码
+* 2018-09-09 正在阅读gc的大概源码
+* 2018-09-16 大概阅读完gc流程源码
+* 2018-09-24 开始详细阅读gc源码
+* 2018-10-13 理解mgc的注释和大概阅读gcStart
+* 2018-10-20 阅读gcMark准备和markroots扫描根对象的逻辑
+* 2018-10-27 阅读gc的栈扫描和消费标记队列
+* 2018-11-04 内存分配的注释 (@jingyugao)
+* 2018-11-25 简单看了一下系统调用如何调度 
+* 2018-01-12 开始阅读内存分配
+* 2019-01-19 补充gc的整个流程和继续阅读内存分配
 
-### Download and Install
+## 微信群
+![wechat](./wechat.jpeg)  
+想一起阅读的小伙伴可以加我微信`sheepbao-520`,加入阅读群
 
-#### Binary Distributions
+## github地址
+https://github.com/sheepbao/golang_runtime_reading
 
-Official binary distributions are available at https://golang.org/dl/.
+### 时间
+每周日晚9:00-10:00
 
-After downloading a binary release, visit https://golang.org/doc/install
-or load doc/install.html in your web browser for installation
-instructions.
+### golang版本
+go1.10.2
 
-#### Install From Source
+### 准备工作
+* 有一台能上网的电脑
+* 安装zoom软件，并注册
+* 装一个阅读golang源码的编译器或者ide，推荐vscode
+* 下载go1.10.2的源码
 
-If a binary distribution is not available for your combination of
-operating system and architecture, visit
-https://golang.org/doc/install/source or load doc/install-source.html
-in your web browser for source installation instructions.
+### 可以先阅读的资料
+* [Goroutine背后的系统知识](http://blog.jobbole.com/35304/)
+* [golang源码剖析-雨痕老师](https://github.com/qyuhen/book)
+* [go-intervals](https://github.com/teh-cmc/go-internals)
+* [也谈goroutine调度器](https://tonybai.com/2017/06/23/an-intro-about-goroutine-scheduler/)
 
-### Contributing
+### 活动步骤
+* 线上用zoom共享屏幕，阅读golang runtime源码，一起讨论添加注释，尽量让每个人都理解
+* 提交结果到github
 
-Go is the work of hundreds of contributors. We appreciate your help!
+### 阅读的方式
+1. 选好一个主题，并查询资料阅读该主题的相关背景
+2. 大概浏览阅读相关源码
+3. 仔细阅读源码实现原理
+4. 最后再整理整个流程
 
-To contribute, please read the contribution guidelines:
-	https://golang.org/doc/contribute.html
+### 暂定的主题
+1. goroutine调度实现
+2. 数据结构的实现
+3. 内存分配实现
+4. gc的实现
 
-Note that the Go project uses the issue tracker for bug reports and
-proposals only. See https://golang.org/wiki/Questions for a list of
-places to ask questions about the Go language.
-
-[rf]: https://reneefrench.blogspot.com/
-[cc3-by]: https://creativecommons.org/licenses/by/3.0/
