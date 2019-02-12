@@ -13,6 +13,9 @@ import "unsafe"
 // must be specially handled.
 //
 //go:notinheap
+// mcache：是线程私有的，每个线程都有一个cache，用来存放小对象。由于每个线程都有cache，所以获取空闲内存是不用加锁的。
+// cache层的主要目的就是提高小内存的频繁分配释放速度。 我们在写程序的时候，其实绝大多数的内存申请都是小于32k的，
+// 属于小对象，因此这样的内存分配全部走本地cache，不用向操作系统申请显然是非常高效的。
 type mcache struct {
 	// The following members are accessed on every malloc,
 	// so they are grouped here for better caching.
@@ -74,6 +77,7 @@ type stackfreelist struct {
 // dummy MSpan that contains no free objects.
 var emptymspan mspan
 
+// 新建一个 mcache
 func allocmcache() *mcache {
 	lock(&mheap_.lock)
 	c := (*mcache)(mheap_.cachealloc.alloc())
@@ -85,6 +89,7 @@ func allocmcache() *mcache {
 	return c
 }
 
+// 释放一个 mcache
 func freemcache(c *mcache) {
 	systemstack(func() {
 		c.releaseAll()
@@ -102,10 +107,10 @@ func freemcache(c *mcache) {
 	})
 }
 
-// 获取一个含有一个空闲对象的span，把它作为给定规格的缓存span
-// 返回这个span
 // Gets a span that has a free object in it and assigns it
 // to be the cached span for the given sizeclass. Returns this span.
+// 获取一个含有一个空闲对象的span，把它作为给定规格的缓存span
+// 返回这个span
 func (c *mcache) refill(spc spanClass) {
 	_g_ := getg()
 

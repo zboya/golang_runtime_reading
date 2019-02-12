@@ -324,10 +324,16 @@ var debug struct {
 	gcstoptheworld   int32
 	gctrace          int32
 	invalidptr       int32
-	sbrk             int32
-	scavenge         int32
-	scheddetail      int32
-	schedtrace       int32
+	// add GODEBUG=sbrk=1 to bypass memory allocator (and GC)
+	// To reduce lock contention in this mode, makes persistent allocation state per-P,
+	// which means at most 64 kB overhead x $GOMAXPROCS, which should be
+	// completely tolerable.
+	// 添加GODEBUG = sbrk = 1以绕过内存分配器（和GC）为了减少此模式下的锁争用，使per-P持久分配状态，
+	// 这意味着最多64 kB开销x $ GOMAXPROCS，这应该是完全可以容忍的。
+	sbrk        int32
+	scavenge    int32
+	scheddetail int32
+	schedtrace  int32
 }
 
 var dbgvars = []dbgVar{
