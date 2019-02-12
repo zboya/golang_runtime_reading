@@ -37,8 +37,8 @@ func (c *mcentral) init(spc spanClass) {
 	c.empty.init()
 }
 
-// 分配span，规格在mcentral中
 // Allocate a span to use in an MCache.
+// 分配span，规格在mcentral中
 func (c *mcentral) cacheSpan() *mspan {
 	// 扣除这个span的借贷，如果有必要进行清扫。
 	// 大致是分配的时候做一些gc工作
@@ -261,13 +261,18 @@ func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 	return true
 }
 
-// 从堆中获取一个span。只是对heap.alloc的简单包装
 // grow allocates a new empty span from the heap and initializes it for c's size class.
+// 首先调用mheap_.alloc函数向heap申请一个span；
+// 然后将span里的连续page给切分成central对应的sizeclass的小内存块，
+// 并将这些小内存串成链表挂在span的freelist上；最后将span放入到nonempty链表中。
+// central在无空闲内存的时候，向heap只要了一个span，不是多个；
+// 申请的span含多少page是根据central对应的sizeclass来确定。
 func (c *mcentral) grow() *mspan {
 	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()])
 	size := uintptr(class_to_size[c.spanclass.sizeclass()])
 	n := (npages << _PageShift) / size
 
+	// 从heap中分配一个 span，以页为单位
 	s := mheap_.alloc(npages, c.spanclass, false, true)
 	if s == nil {
 		return nil

@@ -83,23 +83,24 @@
 // 主分配器在页面运行中起作用。小的分配大小（高达并包括32 kB）被舍入到大约70个大小类中的一个，每个大小类都有自己的一组完全相同大小的对象。
 // 任何可用的内存页面都可以拆分为一个大小类的对象集，然后使用空闲位图进行管理。分配器的数据结构是：
 // fixalloc：
-// 用于固定大小的堆外对象的自由列表分配器，用于管理分配器使用的存储。
+// 固定尺寸的堆对象空闲列表分配器，用来管理分配器的存储。
 // mheap：
-// malloc堆，以页面（8192字节）粒度管理。
+// 堆分配器，以页面（8192字节）粒度管理。
 // mspan：
 // 由mheap管理的一系列页面。
 // mcentral：
-// 收集给定大小类的所有跨度。
+// 所有给定大小类的mspan集合，Central组件其实也是一个缓存，但它缓存的不是小对象内存块，而是一组一组的内存page(一个page占4k大小)
 // mcache：
-// 具有可用空间的mspans的per-P缓存。
+// 每个P上的缓存，具有一定的内存空间。
 // mstats：
 // 分配统计。
-// 分配一个小对象会进入缓存层次结构：
 
+// 分配一个小对象会进入缓存层次结构：
 // 1.将大小调整为一个小型类，并查看此P的mcache中相应的mspan。扫描mspan的免费位图以找到空闲插槽。如果有空闲插槽，请分配它。这可以在不获取锁定的情况下完成。
 // 2.如果mspan没有空闲槽，则从mcentral所需大小类的mspans列表中获取一个具有可用空间的新mspan。获得整个跨度可以分摊锁定中心的成本。
 // 3.如果mcentral的mspan列表为空，则从mheap获取一组页面以用于mspan。
 // 4.如果mheap为空或没有足够大的页面运行，请从操作系统分配一组新页面（至少1MB）。分配大量页面会分摊与操作系统通信的成本。
+
 // 扫描mspan并在其上释放对象会产生类似的层次结构：
 // 1.如果mspan在响应分配时被扫描，则返回到mcache以满足分配。
 // 2.否则，如果mspan仍然在其中分配了对象，则将其放置在mspan的大小类的mcentral空闲列表中。
@@ -108,7 +109,6 @@
 
 // 分配和释放大对象直接使用mheap，绕过mcache和mcentral。
 // 仅当mspan.needzero为false时，mspan中的自由对象槽才会归零。如果needzero为true，则对象在分配时归零。以这种方式延迟归零有很多好处：
-
 // 1.堆栈帧分配可以完全避免归零。
 // 2.它表现出更好的时间局部性，因为程序可能要写入内存。
 // 3.我们不会零页面永远不会被重复使用。
@@ -275,6 +275,15 @@ var physPageSize uintptr
 // sysFault 标记一段内存为fault(已经分配的内存)，仅用于调试
 
 // 由schedinit调用，进程启动后会进入这里
+// mallocinit 实现内存分配的一些初始化，检查对象规格大小对照表，
+// 还将连续的虚拟地址，划分成三大块：
+/*
+      512MB      16GB            512GB
+	+-------+-------------+-------------------+
+	| spans |    bitmap   |       arena       |
+	+-------+-------------+-------------------+
+*/
+// 这三个区域可以按需同步线性扩张，无须预分配内存。
 func mallocinit() {
 	if class_to_size[_TinySizeClass] != _TinySize {
 		throw("bad TinySizeClass")
@@ -351,11 +360,11 @@ func mallocinit() {
 		// translation buffers, the user address space is limited to 39 bits
 		// On darwin/arm64, the address space is even smaller.
 		//
-		// 尝试从 0x1c000000000 开始设置保留地址
-		// 如果失败，则尝试 0x1c000000000～0x7fc000000000
 		arenaSize := round(_MaxMem, _PageSize)
 		// 计算整个区域的大小
 		pSize = bitmapSize + spansSize + arenaSize + _PageSize
+		// 尝试从 0x1c000000000 开始设置保留地址
+		// 如果失败，则尝试 0x1c000000000～0x7fc000000000
 		for i := 0; i <= 0x7f; i++ {
 			switch {
 			case GOARCH == "arm64" && GOOS == "darwin":
@@ -365,7 +374,7 @@ func mallocinit() {
 			default:
 				p = uintptr(i)<<40 | uintptrMask&(0x00c0<<32)
 			}
-			// 从指定位置开始保留地址空间, in mem_linux.go
+			// 申请一大块内存地址保留区，后续所有page的申请都会从这个地址区里分, in mem_linux.go
 			p = uintptr(sysReserve(unsafe.Pointer(p), pSize, &reserved))
 			if p != 0 {
 				break
@@ -452,8 +461,9 @@ func mallocinit() {
 	} else {
 		mheap_.arena_start = p1
 	}
+	// 初始化好heap的arena以及bitmap
 	mheap_.arena_end = p + pSize
-	mheap_.arena_used = p1 //从高到低分配
+	mheap_.arena_used = p1
 	mheap_.arena_alloc = p1
 	mheap_.arena_reserved = reserved
 
@@ -463,20 +473,22 @@ func mallocinit() {
 	}
 
 	// Initialize the rest of the allocator.
+	// 堆分配器的其他属性初始化
 	mheap_.init(spansStart, spansSize)
 	_g_ := getg()
+	// 主线程分配mcache，其他线程是通过 proc.go: procresize 函数赋值的。
 	_g_.m.mcache = allocmcache()
 }
 
+// sysAlloc allocates the next n bytes from the heap arena. The
+// returned pointer is always _PageSize aligned and between
+// h.arena_start and h.arena_end. sysAlloc returns nil on failure.
+// There is no corresponding free function.
 // sysAlloc 从heap arena区域分配n bytes的内存。
 // 返回值总是 _PageSize 对齐的(8k对齐)且处于arena_start和arena_end之间
 // 发生错误返回nil
 // 没有对应的free函数
 // 大于32k的对象会走这里，span分配最终也是走这里
-// sysAlloc allocates the next n bytes from the heap arena. The
-// returned pointer is always _PageSize aligned and between
-// h.arena_start and h.arena_end. sysAlloc returns nil on failure.
-// There is no corresponding free function.
 func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 	// strandLimit 是当前arena块的最大bytes数。如果我们需要更多的内存，
 	// 我们回到sysAlloc就可以了
@@ -508,17 +520,25 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 				// 出错，64位直接返回nil(一般都是代码写错了)
 				goto reservationFailed
 			}
-			// p可以在任何地址，包括arena_end之前
 			// p can be just about anywhere in the address
 			// space, including before arena_end.
+			// p可以在任何地址，包括arena_end之前
 			if p == h.arena_end {
-				// 新的块和当前的块相邻。拓展当前块
 				// The new block is contiguous with
 				// the current block. Extend the
 				// current arena block.
+				// 新的块和当前的块相邻。拓展当前块
 				h.arena_end = new_end
 				h.arena_reserved = reserved
 			} else if h.arena_start <= p && p+p_size-h.arena_start-1 <= _MaxMem && h.arena_end-h.arena_alloc < strandLimit {
+				// We were able to reserve more memory
+				// within the arena space, but it's
+				// not contiguous with our previous
+				// reservation. It could be before or
+				// after our current arena_used.
+				//
+				// Keep everything page-aligned.
+				// Our pages are bigger than hardware pages.
 				// p在arena_start之后且内存不会溢出且空隙不超过16M
 				// 我们可以在arena区域预留更大的内存，
 				// 但是这和之前的预留不连续
@@ -531,28 +551,11 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 				// 然后对齐，接着把alloc设置为p
 				// 分配内存是在 [arena_alloc, arena_end)中
 				// 之前的已经不会在使用了(影响不大，cow不w就没什么开销)
-				// We were able to reserve more memory
-				// within the arena space, but it's
-				// not contiguous with our previous
-				// reservation. It could be before or
-				// after our current arena_used.
-				//
-				// Keep everything page-aligned.
-				// Our pages are bigger than hardware pages.
 				h.arena_end = p + p_size
 				p = round(p, _PageSize)
 				h.arena_alloc = p
 				h.arena_reserved = reserved
 			} else {
-				// 我们处于以下其中一种情况
-				//
-				// 1) 不在arena中，无法使用，(32位os不会发生)
-				// We got a mapping, but either
-				//
-				// 2) 我们可能需要废弃很大一块区域来使用它
-				// (对齐的代价或者其他原因)
-				//
-				// 我们还没有统计这次分配，因此去掉它防止下溢
 				// 1) It's not in the arena, so we
 				// can't use it. (This should never
 				// happen on 32-bit.)
@@ -566,13 +569,21 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 				// fake stat (but avoid underflow).
 				//
 				// We'll fall back to a small sysAlloc.
+				// 我们处于以下其中一种情况
+				//
+				// 1) 不在arena中，无法使用，(32位os不会发生)
+				// We got a mapping, but either
+				//
+				// 2) 我们可能需要废弃很大一块区域来使用它
+				// (对齐的代价或者其他原因)
+				//
+				// 我们还没有统计这次分配，因此去掉它防止下溢
 				stat := uint64(p_size)
 				// 释放这段内存
 				sysFree(unsafe.Pointer(p), p_size, &stat)
 			}
 		}
 		// 其他情况什么都不做
-
 	}
 
 	if n <= h.arena_end-h.arena_alloc {
@@ -627,11 +638,11 @@ reservationFailed:
 // base address for all 0-byte allocations
 var zerobase uintptr
 
+// nextFreeFast returns the next free object if one is quickly available.
+// Otherwise it returns 0.
 // 初始情况allocCache都是^uint64(0)，freeindex是1
 // 然后freeidx=2 allocCache更新为^uint64(0)>>1
 // 如果内存没有释放，theBit一直都是0
-// nextFreeFast returns the next free object if one is quickly available.
-// Otherwise it returns 0.
 func nextFreeFast(s *mspan) gclinkptr {
 	// 第几位开始不是0
 	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
@@ -675,7 +686,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 			throw("s.allocCount != s.nelems && freeIndex == s.nelems")
 		}
 		systemstack(func() {
-			// 从上一级调拨span，参数为span的规格
+			// 获取一个spc规格的span
 			c.refill(spc)
 		})
 		shouldhelpgc = true
@@ -701,20 +712,15 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
 // mallocgc是从堆中分配对象，并根据情况触发gc
-// 在分析内存分配器这部分源码的时候，首先需要明确的是所有内存分配的入口，
-// 有了入口就可以从这里作为起点一条线的看下去，不会有太大的障碍。
-// 这个入口就是malloc.go源文件中的runtime·mallocgc函数，
-// 这个入口函数的主要工作就是分配内存以及触发gc(本文将只介绍内存分配)，
-// 在进入真正的分配内存之前，此入口函数还会判断请求的是小内存分配还是大内存分配(32k作为分界线)；
-// 小内存分配将调用runtime·MCache_Alloc函数从Cache获取，而大内存分配调用runtime·MHeap_Alloc直接从Heap获取。
-// 入口函数过后，就会真正的进入到具体的内存分配过程中去了。
-// 原文：https://blog.csdn.net/lengyuezuixue/article/details/79651769
 // 分配内存的大概流程
 // 1. 计算待分配对象对应的规格
 // 2. 从 cache.alloc 数组找到规格相同的 span
-// 3. 从 span.freelist 链表提取可用的 object， 如果 span.freelist 为空，从 central 获取新的 span
-// 4.
+// 3. 从 span.freelist 链表提取可用的 object
+// 4. 如果 span.freelist 为空，从 central 获取新的 span
+// 5. 如果 central.nonempty 为空，从 heap.free/freelarge 获取，并切分成 object 链。
+// 6. 如 heap 没有大小合适闲置的 span，向操作系统申请新的内存
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
+	// 如果是 _GCmarktermination 阶段，那么抛出异常
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")
 	}
@@ -723,6 +729,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 		return unsafe.Pointer(&zerobase)
 	}
 
+	// 绕过内存分配器（和GC）
 	if debug.sbrk != 0 {
 		align := uintptr(16)
 		if typ != nil {
@@ -762,6 +769,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if mp.gsignal == getg() {
 		throw("malloc during signal")
 	}
+	// 标志正在分配
 	mp.mallocing = 1
 
 	shouldhelpgc := false
@@ -769,9 +777,11 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// 获取当前M的mcache
 	c := gomcache()
 	var x unsafe.Pointer
+	// 如果类型是nil或者不带指针，就不需要扫描
 	noscan := typ == nil || typ.kind&kindNoPointers != 0
 	// size <= 32k
 	if size <= maxSmallSize { // 分配小对象
+		// 没指针且 size 小于16，用微小分配器分配内存
 		if noscan && size < maxTinySize {
 			// Tiny allocator.
 			//
@@ -802,8 +812,24 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// standalone escaping variables. On a json benchmark
 			// the allocator reduces number of allocations by ~12% and
 			// reduces heap size by ~20%.
+			//
+			// 微小的分配器。
+			// 微型分配器将几个微小的分配请求组合到一个内存块中。当所有子对象都无法访问时，将释放生成的内存块。
+			// 子对象必须是noscan（没有指针），这可以确保可能浪费的内存量受到限制。
+			//
+			// 用于组合的内存块的大小（maxTinySize）是可调的。当前设置为16个字节，
+			// 这与2x最坏情况的内存浪费（当除了一个子对象之外的所有子对象都无法访问时）有关。
+			// 8字节将导致完全没有浪费，但提供更少的组合机会。 32字节提供了更多的组合机会，
+			// 但可能导致4倍最坏情况下的浪费。无论块大小如何，获胜的最佳案例是8倍。
+			//
+			// 从微小分配器获得的对象不得明确释放。因此，当显式释放对象时，我们确保其大小> = maxTinySize。
+			//
+			// SetFinalizer对于可能来自微小分配器的对象有一个特殊情况，它允许为内存块的内部字节设置终结器。
+			//
+			// 微分配器的主要目标是小字符串和独立的转义变量。在json基准测试中，分配器将分配数量减少了大约12％，并将堆大小减少了大约20％。
 			off := c.tinyoffset
 			// Align tiny pointer for required (conservative) alignment.
+			// 对齐，调整偏移量
 			if size&7 == 0 {
 				off = round(off, 8)
 			} else if size&3 == 0 {
@@ -811,8 +837,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			} else if size&1 == 0 {
 				off = round(off, 2)
 			}
+			// 如果剩余空间足够
 			if off+size <= maxTinySize && c.tiny != 0 {
 				// The object fits into existing tiny block.
+				// 返回对象的指针，切调整偏移量为下次分配做准备
 				x = unsafe.Pointer(c.tiny + off)
 				c.tinyoffset = off + size
 				c.local_tinyallocs++
@@ -821,9 +849,12 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 				return x
 			}
 			// Allocate a new maxTinySize block.
+			// 如果空间不够，自然需要获取新的 maxTinySize 块。
 			span := c.alloc[tinySpanClass]
+			// 尝试快速的从这个span中分配
 			v := nextFreeFast(span)
 			if v == 0 {
+				// 如果从上面的span中没有可用的 object， 那么从 central 中获取。
 				v, _, shouldhelpgc = c.nextFree(tinySpanClass)
 			}
 			x = unsafe.Pointer(v)
@@ -837,6 +868,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			}
 			size = maxTinySize
 		} else {
+			// 普通小对象（>16 & <32k）
+			// 查表确定 sizeclass
 			var sizeclass uint8
 			if size <= smallSizeMax-8 {
 				sizeclass = size_to_class8[(size+smallSizeDiv-1)/smallSizeDiv]
@@ -846,16 +879,19 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			size = uintptr(class_to_size[sizeclass])
 			spc := makeSpanClass(sizeclass, noscan)
 			span := c.alloc[spc]
+			// 尝试快速的从这个span中分配
 			v := nextFreeFast(span)
 			if v == 0 {
 				v, span, shouldhelpgc = c.nextFree(spc)
 			}
 			x = unsafe.Pointer(v)
+			// 如果需要清零，就调用memclrNoHeapPointers将对象初始化为0
 			if needzero && span.needzero != 0 {
 				memclrNoHeapPointers(unsafe.Pointer(v), size)
 			}
 		}
 	} else { // 分配大对象
+		// 大对象直接从 heap 中分配
 		var s *mspan
 		shouldhelpgc = true
 		systemstack(func() {
@@ -905,7 +941,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// This may be racing with GC so do it atomically if there can be
 	// a race marking the bit.
 	// 如果gc阶段不是_GCoff，也就是说正在gc
-	// 直接分配黑色对象
+	// 直接标记为黑色对象，黑色对象不会被回收
 	if gcphase != _GCoff {
 		gcmarknewobject(uintptr(x), size, scanSize)
 	}
@@ -954,12 +990,13 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	return x
 }
 
+// 大对象分配
 func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	// print("largeAlloc size=", size, "\n")
-
 	if size+_PageSize < size {
 		throw("out of memory")
 	}
+	// 得到所需页数
 	npages := size >> _PageShift
 	if size&_PageMask != 0 {
 		npages++
@@ -982,6 +1019,7 @@ func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 // implementation of new builtin
 // compiler (both frontend and SSA backend) knows the signature
 // of this function
+// new 内建函数的实现
 func newobject(typ *_type) unsafe.Pointer {
 	return mallocgc(typ.size, typ, true)
 }

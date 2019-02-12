@@ -27,15 +27,19 @@ const minPhysPageSize = 4096
 // which must not be heap-allocated.
 //
 //go:notinheap
+// 堆分配器，按页的粒度来管理内存
 type mheap struct {
-	lock      mutex
-	free      [_MaxMHeapList]mSpanList // free lists of given length up to _MaxMHeapList
+	lock mutex
+	// 页数在127以内的闲置 span 链表数组
+	free [_MaxMHeapList]mSpanList // free lists of given length up to _MaxMHeapList
+	// 页数大于127（>=1M）的大 span 链表
 	freelarge mTreap                   // free treap of length >= _MaxMHeapList
 	busy      [_MaxMHeapList]mSpanList // busy lists of large spans of given length
 	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
-	sweepgen  uint32                   // sweep generation, see comment in mspan
-	sweepdone uint32                   // all spans are swept
-	sweepers  uint32                   // number of active sweepone calls
+	// 清扫的代龄值
+	sweepgen  uint32 // sweep generation, see comment in mspan
+	sweepdone uint32 // all spans are swept
+	sweepers  uint32 // number of active sweepone calls
 
 	// allspans is a slice of all mspans ever created. Each mspan
 	// appears exactly once.
@@ -149,6 +153,7 @@ type mheap struct {
 	// spaced CacheLineSize bytes apart, so that each MCentral.lock
 	// gets its own cache line.
 	// central is indexed by spanClass.
+	// 每个 central 对应一个 sizeClass
 	central [numSpanClasses]struct {
 		mcentral mcentral
 		pad      [sys.CacheLineSize - unsafe.Sizeof(mcentral{})%sys.CacheLineSize]byte
@@ -164,6 +169,8 @@ type mheap struct {
 	unused *specialfinalizer // never set, just here to force the specialfinalizer type into DWARF
 }
 
+// mheap_ 是 runtime 内存管理的全局跟对象，一个golang程序只会有一个 mheap_ 。
+// mheap_ 由所有底层的线程共享。
 var mheap_ mheap
 
 // An MSpan is a run of pages.
@@ -509,6 +516,7 @@ func mlookup(v uintptr, base *uintptr, size *uintptr, sp **mspan) int32 {
 }
 
 // Initialize the heap.
+// mheap 初始化，free、large字段都是挂载维护span的双向循环链表。
 func (h *mheap) init(spansStart, spansBytes uintptr) {
 	h.treapalloc.init(unsafe.Sizeof(treapNode{}), nil, nil, &memstats.other_sys)
 	h.spanalloc.init(unsafe.Sizeof(mspan{}), recordspan, unsafe.Pointer(h), &memstats.mspan_sys)
@@ -761,6 +769,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 	return s
 }
 
+// 从heap中分配一个span
 func (h *mheap) alloc(npage uintptr, spanclass spanClass, large bool, needzero bool) *mspan {
 	// Don't do any operations that lock the heap on the G stack.
 	// It might trigger stack growth, and the stack growth code needs
