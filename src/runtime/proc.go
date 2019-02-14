@@ -490,12 +490,12 @@ func releaseSudog(s *sudog) {
 //go:nosplit
 // 得到go函数f的执行地址
 // 以下来自微信讨论，感谢 @frank-hust 网友的精彩分析
-// 首先f是个空接口，其结构如下 runtime2.go,
+// 首先f是个 eface，其结构如下 runtime2.go,
 // type eface struct {
 // 	_type *_type
 // 	data  unsafe.Pointer
 // }
-// &f 得到f空接口的地址，然后加上 sys.PtrSize 就是得到f这个空接口里data字段，
+// &f 得到 eface 的地址，然后加上 sys.PtrSize 就是得到f这个 eface 里data字段，
 // 而对于传入一个函数来说, data是一个指向某个函数位置的指针.
 // 所以这是一个指向指针的指针. 要取函数位置的话, 用两个**。
 // 为啥要用interface多一层转换, 因为不同的函数类型不同, 所以得用interface
