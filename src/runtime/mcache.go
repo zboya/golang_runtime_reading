@@ -31,6 +31,7 @@ type mcache struct {
 	// tiny is a heap pointer. Since mcache is in non-GC'd memory,
 	// we handle it by clearing it in releaseAll during mark
 	// termination.
+	// 本地小对象分配
 	tiny             uintptr
 	tinyoffset       uintptr
 	local_tinyallocs uintptr // number of tiny allocs not counted in other stats

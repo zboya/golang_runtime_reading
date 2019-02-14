@@ -482,8 +482,23 @@ func releaseSudog(s *sudog) {
 // the same function in the address space). To be safe, don't use the
 // results of this function in any == expression. It is only safe to
 // use the result as an address at which to start executing code.
+// funcPC returns the entry PC of the function f.
+//
+// funcPC返回函数f的条目PC。它假设f是一个函数值。否则行为未定义。
+// 小心：在带插件的程序中，funcPC可以为同一个函数返回不同的值（因为实际上在地址空间中有相同函数的多个副本）。
+// 为安全起见，请勿在任何==表达式中使用此函数的结果。将结果用作开始执行代码的地址是安全的。
 //go:nosplit
-// 返回f函数的下一个执行地址
+// 得到go函数f的执行地址
+// 以下来自微信讨论，感谢 @frank-hust 网友的精彩分析
+// 首先f是个空接口，其结构如下 runtime2.go,
+// type eface struct {
+// 	_type *_type
+// 	data  unsafe.Pointer
+// }
+// &f 得到f空接口的地址，然后加上 sys.PtrSize 就是得到f这个空接口里data字段，
+// 而对于传入一个函数来说, data是一个指向某个函数位置的指针.
+// 所以这是一个指向指针的指针. 要取函数位置的话, 用两个**。
+// 为啥要用interface多一层转换, 因为不同的函数类型不同, 所以得用interface
 func funcPC(f interface{}) uintptr {
 	return **(**uintptr)(add(unsafe.Pointer(&f), sys.PtrSize))
 }
