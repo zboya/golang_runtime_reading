@@ -599,6 +599,9 @@ func (c *gcControllerState) startCycle() {
 // It should only be called when gcBlackenEnabled != 0 (because this
 // is when assists are enabled and the necessary statistics are
 // available).
+// 修订在GC周期期间更新辅助比率以考虑改进的估计。这应该在STW下或每当更新memstats.heap_scan，
+// memstats.heap_live或memstats.next_gc时调用（使用mheap_.lock）。
+// 只应在gcBlackenEnabled！= 0时调用它（因为这是启用辅助并且必要的统计信息可用时）
 func (c *gcControllerState) revise() {
 	gcpercent := gcpercent
 	if gcpercent < 0 {

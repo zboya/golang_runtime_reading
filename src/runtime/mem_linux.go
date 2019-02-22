@@ -9,6 +9,16 @@ import (
 	"unsafe"
 )
 
+// PROT_NONE 页不可访问
+// PROT_READ 页内容可以被读取
+// PROT_WRITE 页可以被写入
+
+// MAP_ANONYMOUS 匿名映射，映射区不与任何文件关联。
+// MAP_ANON MAP_ANONYMOUS的别称，不再被使用。
+// MAP_PRIVATE 建立一个写入时拷贝的私有映射。内存区域的写入不会影响到原文件。
+// MAP_FIXED 使用指定的映射起始地址，如果由start和len参数指定的内存区重叠于现存的映射空间，重叠部分将会被丢弃。
+// 如果指定的起始地址不可用，操作将会失败。并且起始地址必须落在页的边界上。
+
 const (
 	_EACCES = 13
 	_EINVAL = 22
@@ -216,6 +226,8 @@ func sysReserve(v unsafe.Pointer, n uintptr, reserved *bool) unsafe.Pointer {
 	return p
 }
 
+// 分配虚拟内存，没有分配物理内存。在第一次访问已分配的虚拟地址空间的时候，发生缺页中断，
+// 操作系统负责分配物理内存，然后建立虚拟内存和物理内存之间的映射关系。
 func sysMap(v unsafe.Pointer, n uintptr, reserved bool, sysStat *uint64) {
 	mSysStatInc(sysStat, n)
 

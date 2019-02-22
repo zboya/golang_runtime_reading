@@ -488,16 +488,16 @@ func mallocinit() {
 // 返回值总是 _PageSize 对齐的(8k对齐)且处于arena_start和arena_end之间
 // 发生错误返回nil
 // 没有对应的free函数
-// 大于32k的对象会走这里，span分配最终也是走这里
+// span分配最终也是走这里
 func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
-	// strandLimit 是当前arena块的最大bytes数。如果我们需要更多的内存，
-	// 我们回到sysAlloc就可以了
-	// 这里的strand from应该是断层的意思，有一部分边角料由于对齐的原因无法使用
-	// 这块边角料不超过16M就可以，太大了可能会导致太浪费了把。
 	// strandLimit is the maximum number of bytes to strand from
 	// the current arena block. If we would need to strand more
 	// than this, we fall back to sysAlloc'ing just enough for
 	// this allocation.
+	// strandLimit 是当前arena块的最大bytes数。如果我们需要更多的内存，
+	// 我们回到sysAlloc就可以了
+	// 这里的strand from应该是断层的意思，有一部分边角料由于对齐的原因无法使用
+	// 这块边角料不超过16M就可以，太大了可能会导致太浪费了把。
 	const strandLimit = 16 << 20 //16M
 
 	// 需要进行预留
@@ -586,6 +586,7 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 		// 其他情况什么都不做
 	}
 
+	// n小于未使用的arena区域
 	if n <= h.arena_end-h.arena_alloc {
 		// Keep taking from our reservation.
 		p := h.arena_alloc
@@ -601,7 +602,7 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 		return unsafe.Pointer(p)
 	}
 
-reservationFailed:
+reservationFailed: // 内存预留出错的处理
 	// If using 64-bit, our reservation is all we have.
 	if sys.PtrSize != 4 {
 		return nil
@@ -640,6 +641,8 @@ var zerobase uintptr
 
 // nextFreeFast returns the next free object if one is quickly available.
 // Otherwise it returns 0.
+// nextFreeFast返回下一个空闲对象（如果有一个快速可用的对象）。
+// 否则返回0。
 // 初始情况allocCache都是^uint64(0)，freeindex是1
 // 然后freeidx=2 allocCache更新为^uint64(0)>>1
 // 如果内存没有释放，theBit一直都是0
@@ -674,11 +677,14 @@ func nextFreeFast(s *mspan) gclinkptr {
 // weight allocation. If it is a heavy weight allocation the caller must
 // determine whether a new GC cycle needs to be started or if the GC is active
 // whether this goroutine needs to assist the GC.
-// 找到freeIndex，如果span里面所有元素都已分配, 则需要分配新的span
+// 如果有可用的话，nextFree将从缓存的span中返回下一个空闲对象。否则，它会使用带有可用对象的span重新填充缓存，
+// 并返回该对象以及指示这是一个重量级分配的标志。如果是重量级分配，则调用者必须确定是否需要启动新的GC循环，
+// 或者GC是否处于活动状态是否需要帮助GC。
 func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bool) {
 	s = c.alloc[spc]
 	shouldhelpgc = false
 	freeIndex := s.nextFreeIndex()
+	// 找到freeIndex，如果span里面所有元素都已分配, 则需要分配新的span
 	if freeIndex == s.nelems {
 		// The span is full.
 		if uintptr(s.allocCount) != s.nelems {
@@ -691,7 +697,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 		})
 		shouldhelpgc = true
 		s = c.alloc[spc]
-
+		// 返回下一个可用对象的index(是freeindex或在其后)
 		freeIndex = s.nextFreeIndex()
 	}
 
@@ -711,8 +717,10 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
-// mallocgc是从堆中分配对象，并根据情况触发gc
-// 分配内存的大概流程
+// mallocgc是从堆中分配size bytes大小的对象，并根据情况触发gc
+// 小对象从每个P缓存的空闲列表中分配，大对象（>32k）直接从堆分配器中分配。
+//
+// 大对象（>32k）直接从堆分配器中分配，分配小对象的大概流程如下:
 // 1. 计算待分配对象对应的规格
 // 2. 从 cache.alloc 数组找到规格相同的 span
 // 3. 从 span.freelist 链表提取可用的 object
@@ -854,7 +862,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// 尝试快速的从这个span中分配
 			v := nextFreeFast(span)
 			if v == 0 {
-				// 如果从上面的span中没有可用的 object， 那么从 central 中获取。
+				// 如果从上面的span中没有可用的 object，那么从 central 中获取。
 				v, _, shouldhelpgc = c.nextFree(tinySpanClass)
 			}
 			x = unsafe.Pointer(v)
@@ -893,12 +901,14 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	} else { // 分配大对象
 		// 大对象直接从 heap 中分配
 		var s *mspan
+		// 大对象分配，一定是新分配了内存
 		shouldhelpgc = true
 		systemstack(func() {
 			s = largeAlloc(size, needzero, noscan)
 		})
 		s.freeindex = 1
 		s.allocCount = 1
+		// 得到对象的起始地址
 		x = unsafe.Pointer(s.base())
 		size = s.elemsize
 	}
@@ -990,7 +1000,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	return x
 }
 
-// 大对象分配
+// 大对象分配，让 mheap_ 分配一个大对象
 func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	// print("largeAlloc size=", size, "\n")
 	if size+_PageSize < size {

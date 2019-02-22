@@ -24,6 +24,9 @@ import "unsafe"
 // smashed by freeing and reallocating.
 //
 // Consider marking fixalloc'd types go:notinheap.
+// FixAlloc是一个简单的自由列表分配器，用于固定大小的对象。 Malloc使用围绕sysAlloc的FixAlloc来管理其MCache和MSpan对象。
+// fixalloc.alloc返回的内存默认为零，但调用者可以通过将zero标志设置为false来负责将分配归零。如果内存永远不包含堆指针，这只是安全的。
+// 调用者负责锁定FixAlloc调用。呼叫者可以在对象中保持状态，但第一个单词是通过释放和重新分配来粉碎的。
 type fixalloc struct {
 	size   uintptr
 	first  func(arg, p unsafe.Pointer) // called first time p is returned
