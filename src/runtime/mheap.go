@@ -30,9 +30,9 @@ const minPhysPageSize = 4096
 // 堆分配器，按页的粒度来管理内存
 type mheap struct {
 	lock mutex
-	// 页数在127以内的闲置 span 链表数组
+	// 页数在127以内的闲置 span 链表数组，长度为128.
 	free [_MaxMHeapList]mSpanList // free lists of given length up to _MaxMHeapList
-	// 页数大于127（>=1M）的大 span 链表
+	// 页数大于127（>=1M）的大 span 树堆。
 	freelarge mTreap                   // free treap of length >= _MaxMHeapList
 	busy      [_MaxMHeapList]mSpanList // busy lists of large spans of given length
 	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
@@ -153,7 +153,12 @@ type mheap struct {
 	// spaced CacheLineSize bytes apart, so that each MCentral.lock
 	// gets its own cache line.
 	// central is indexed by spanClass.
-	// 每个 central 对应一个 sizeClass
+	// 小规格类型的空闲列表。填充确保MCentrals的CacheLineSize字节间隔开，以便每个MCentral.lock获得自己的缓存行。
+	// central由spanClass索引。
+	//
+	// heap里其实是维护了134个central，这134个central对应了 mcache 中的 alloc 数组，也就是每一个spanClass就有一个central。
+	// 所以，在mcache中申请内存时，如果在某个 spanClass 的内存链表上找不到空闲内存，那么 mcache 就会向对应的 spanClass 的central获取一批内存块。
+	// 注意，这里central数组的定义里面使用填充字节，这是因为多线程会并发访问不同central避免false sharing。
 	central [numSpanClasses]struct {
 		mcentral mcentral
 		pad      [sys.CacheLineSize - unsafe.Sizeof(mcentral{})%sys.CacheLineSize]byte
@@ -220,6 +225,7 @@ var mSpanStateNames = []string{
 // mSpanList heads a linked list of spans.
 //
 //go:notinheap
+// mspan的双向链表
 type mSpanList struct {
 	first *mspan // first span in list, or nil if none
 	last  *mspan // last span in list, or nil if none
@@ -540,6 +546,7 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 	}
 
 	h.busylarge.init()
+	// central数组的初始化
 	for i := range h.central {
 		h.central[i].mcentral.init(spanClass(i))
 	}
@@ -635,6 +642,8 @@ retry:
 
 // Sweeps and reclaims at least npage pages into heap.
 // Called before allocating npage pages.
+// 扫描并回收至少npage页到堆中。
+// 在分配npage页面之前调用。
 func (h *mheap) reclaim(npage uintptr) {
 	// First try to sweep busy spans with large objects of size >= npage,
 	// this has good chances of reclaiming the necessary space.
@@ -676,6 +685,7 @@ func (h *mheap) reclaim(npage uintptr) {
 
 // Allocate a new span of npage pages from the heap for GC'd memory
 // and record its size class in the HeapMap and HeapMapCache.
+// 从堆中为GC内存分配新的npage页面范围，并在HeapMap和HeapMapCache中记录其大小类。
 func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 	_g_ := getg()
 	if _g_ != _g_.m.g0 {
@@ -685,7 +695,8 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 
 	// To prevent excessive heap growth, before allocating n pages
 	// we need to sweep and reclaim at least n pages.
-	if h.sweepdone == 0 {
+	// 为了防止过多的堆增长，在分配n个页面之前，我们需要扫描并回收至少n个页面。
+	if h.sweepdone == 0 { // 如果gc正在清扫，那么清扫出 npage 内存，来复用
 		// TODO(austin): This tends to sweep a large number of
 		// spans in order to find a few completely free spans
 		// (for example, in the garbage benchmark, this sweeps
@@ -693,6 +704,8 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 		// If GC kept a bit for whether there were any marks
 		// in a span, we could release these free spans
 		// at the end of GC and eliminate this entirely.
+		// 这往往会扫描大量的 spans ，以便找到一些完全空闲的 spans （例如，在垃圾基准测试中，这会扫描其尝试分配的页数的约30倍）。
+		// 如果GC保持一个 spans 中是否有任何标记，我们可以在GC结束时释放这些自由 spans 并完全消除这一点。
 		if trace.enabled {
 			traceGCSweepStart()
 		}
@@ -703,15 +716,18 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 	}
 
 	// transfer stats from cache to global
+	// 全局内存统计的更改
 	memstats.heap_scan += uint64(_g_.m.mcache.local_scan)
 	_g_.m.mcache.local_scan = 0
 	memstats.tinyallocs += uint64(_g_.m.mcache.local_tinyallocs)
 	_g_.m.mcache.local_tinyallocs = 0
 
+	// 分配内存
 	s := h.allocSpanLocked(npage, &memstats.heap_inuse)
 	if s != nil {
 		// Record span info, because gc needs to be
 		// able to map interior pointer to containing span.
+		// 记录 span 信息，因为gc需要能够将内部指针映射到包含span。
 		atomic.Store(&s.sweepgen, h.sweepgen)
 		h.sweepSpans[h.sweepgen/2%2].push(s) // Add to swept in-use list.
 		s.state = _MSpanInUse
@@ -774,12 +790,15 @@ func (h *mheap) alloc(npage uintptr, spanclass spanClass, large bool, needzero b
 	// Don't do any operations that lock the heap on the G stack.
 	// It might trigger stack growth, and the stack growth code needs
 	// to be able to allocate heap.
+	// 不要执行任何锁定G堆栈上的堆的操作。它可能会触发堆栈增长，并且堆栈增长代码需要能够分配堆。
 	var s *mspan
 	systemstack(func() {
+		// 分配内存
 		s = h.alloc_m(npage, spanclass, large)
 	})
 
 	if s != nil {
+		// 需要清零
 		if needzero && s.needzero != 0 {
 			memclrNoHeapPointers(unsafe.Pointer(s.base()), s.npages<<_PageShift)
 		}
@@ -827,22 +846,27 @@ func (h *mheap) allocManual(npage uintptr, stat *uint64) *mspan {
 // Allocates a span of the given size.  h must be locked.
 // The returned span has been removed from the
 // free list, but its state is still MSpanFree.
+// 分配给定大小的 span。h必须锁定。返回的 span 已从空闲列表中删除，但其状态仍为MSpanFree。
 func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 	var list *mSpanList
 	var s *mspan
 
 	// Try in fixed-size lists up to max.
+	// 需要分配的页数小于128，尝试从 h.free 中获取
 	for i := int(npage); i < len(h.free); i++ {
 		list = &h.free[i]
-		if !list.isEmpty() {
+		if !list.isEmpty() { // 获取到了 span
 			s = list.first
 			list.remove(s)
 			goto HaveSpan
 		}
 	}
 	// Best fit in list of large spans.
+	// 尝试从 h.freelarge 获取需要的 span
 	s = h.allocLarge(npage) // allocLarge removed s from h.freelarge for us
 	if s == nil {
+		// 如果上面没有获取到 span，只能新分配了。
+		// 新分配完以后，会放到 h.freelarge 中，这样再调用 h.allocLarge 就可以获取了。
 		if !h.grow(npage) {
 			return nil
 		}
@@ -910,6 +934,8 @@ func (h *mheap) isLargeSpan(npages uintptr) bool {
 
 // allocLarge allocates a span of at least npage pages from the treap of large spans.
 // Returns nil if no such span currently exists.
+// allocLarge从大 span 的树堆中分配至少npage页的 span。
+// 如果当前不存在此类范围，则返回nil。
 func (h *mheap) allocLarge(npage uintptr) *mspan {
 	// Search treap for smallest span with >= npage pages.
 	return h.freelarge.remove(npage)
@@ -919,17 +945,23 @@ func (h *mheap) allocLarge(npage uintptr) *mspan {
 // returning whether it worked.
 //
 // h must be locked.
+// h必须被锁定了，grow 至少添加 npage 内存。
+// 调用 h.sysAlloc 来分配内存。
 func (h *mheap) grow(npage uintptr) bool {
 	// Ask for a big chunk, to reduce the number of mappings
 	// the operating system needs to track; also amortizes
 	// the overhead of an operating system mapping.
 	// Allocate a multiple of 64kB.
+	// 要求大块，减少操作系统需要跟踪的映射数量;还可以分摊操作系统映射的开销。
+	// 分配64kB的倍数。
 	npage = round(npage, (64<<10)/_PageSize)
 	ask := npage << _PageShift
+	// 至少1M
 	if ask < _HeapAllocChunk {
 		ask = _HeapAllocChunk
 	}
 
+	// 调用  h.sysAlloc(ask) 来申请内存。
 	v := h.sysAlloc(ask)
 	if v == nil {
 		if ask > npage<<_PageShift {

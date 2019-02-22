@@ -18,11 +18,13 @@ import "runtime/internal/atomic"
 //
 //go:notinheap
 type mcentral struct {
-	lock      mutex
+	lock mutex
+	// 该 mcentral 的 span 规格
 	spanclass spanClass
-	// 这个a free object不是一个的意思。应该是若干个。
+	// nonempty字面意思是非空，表示这个链表上存储的span节点都是非空状态，也就是说这些span节点都有空闲的内存
 	nonempty mSpanList // list of spans with a free object, ie a nonempty free list
-	empty    mSpanList // list of spans with no free objects (or cached in an mcache)
+	// empty表示此链表存储的span都是空的，它们都没有空闲可用的内存了
+	empty mSpanList // list of spans with no free objects (or cached in an mcache)
 
 	// nmalloc is the cumulative count of objects allocated from
 	// this mcentral, assuming all spans in mcaches are
@@ -40,9 +42,9 @@ func (c *mcentral) init(spc spanClass) {
 // Allocate a span to use in an MCache.
 // 分配span，规格在mcentral中
 func (c *mcentral) cacheSpan() *mspan {
+	// Deduct credit for this span allocation and sweep if necessary.
 	// 扣除这个span的借贷，如果有必要进行清扫。
 	// 大致是分配的时候做一些gc工作
-	// Deduct credit for this span allocation and sweep if necessary.
 	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize
 	deductSweepCredit(spanBytes, 0)
 
@@ -59,7 +61,7 @@ func (c *mcentral) cacheSpan() *mspan {
 	sg := mheap_.sweepgen
 retry:
 	var s *mspan
-	// 遍历有空闲对象的链表
+	// 遍历有空闲内存对象的链表
 	// 如果需要清扫，进行清扫并把它移到空span链表(分配给下一级的mcache)
 	for s = c.nonempty.first; s != nil; s = s.next {
 		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
@@ -70,8 +72,8 @@ retry:
 			goto havespan
 		}
 		if s.sweepgen == sg-1 {
-			// 正在清扫，下一个
 			// the span is being swept by background sweeper, skip
+			// 这个 span 正在被清扫，跳过
 			continue
 		}
 		// 请扫过了 可以直接用
@@ -81,7 +83,7 @@ retry:
 		unlock(&c.lock)
 		goto havespan
 	}
-	// 从empty中找一找，这里面的要么没空闲对象，要么在mcache中
+	// 从empty中找一找，这里面的，要么没空闲对象，要么在mcache中
 	for s = c.empty.first; s != nil; s = s.next {
 		// 需要清扫
 		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
@@ -116,8 +118,8 @@ retry:
 	}
 	unlock(&c.lock)
 
-	// 还是没有，只能grow了，从heap中分配
 	// Replenish central list if empty.
+	// 还是没有，只能grow了，从heap中分配
 	s = c.grow()
 	if s == nil {
 		return nil
@@ -128,6 +130,7 @@ retry:
 
 	// At this point s is a non-empty span, queued at the end of the empty list,
 	// c is unlocked.
+	// 到这里已经有了一个有效的 span ，并且已经把它插入到了 empty 的末尾。
 havespan:
 	if trace.enabled && !traceDone {
 		traceGCSweepDone()
@@ -165,9 +168,9 @@ havespan:
 	// 初始化缓存
 	s.refillAllocCache(whichByte)
 
-	// 调节一下，右移动,allocCache的1表示未使用，0表示已使用
 	// Adjust the allocCache so that s.freeindex corresponds to the low bit in
 	// s.allocCache.
+	// 调节一下，右移动,allocCache的1表示未使用，0表示已使用
 	s.allocCache >>= s.freeindex % 64
 
 	return s

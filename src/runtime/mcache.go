@@ -110,8 +110,9 @@ func freemcache(c *mcache) {
 
 // Gets a span that has a free object in it and assigns it
 // to be the cached span for the given sizeclass. Returns this span.
-// 获取一个含有一个空闲对象的span，把它作为给定规格的缓存span
-// 返回这个span
+// 获取一个含有一个空闲对象的span，把它作为给定规格的缓存span，
+// 如果没有空闲的 span 了，那么从 mcentral 中获取一个。
+// 最后返回这个 span。
 func (c *mcache) refill(spc spanClass) {
 	_g_ := getg()
 
@@ -122,14 +123,14 @@ func (c *mcache) refill(spc spanClass) {
 	if uintptr(s.allocCount) != s.nelems {
 		throw("refill of span with free space remaining")
 	}
-	// 如果是非的说明这个span已经有人用过了
+	// 如果s不是 emptymspan ，说明这个span已经有人用过了
 	// 一开始的span都是emptymspan
 	if s != &emptymspan {
 		s.incache = false
 	}
 
-	// 从central获取span
 	// Get a new cached span from the central lists.
+	// 从 central 获取相应规格的 span
 	s = mheap_.central[spc].mcentral.cacheSpan()
 	if s == nil {
 		throw("out of memory")
