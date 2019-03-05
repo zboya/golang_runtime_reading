@@ -137,10 +137,12 @@ const (
 )
 
 //go:noescape
+// 在 runtime/sys_linux_amd64.s 中汇编实现
 func clone(flags int32, stk, mp, gp, fn unsafe.Pointer) int32
 
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrier
+// 分配一个系统线程，且完成 g0 和 g0上的栈分配
 func newosproc(mp *m, stk unsafe.Pointer) {
 	/*
 	 * note: strace gets confused if we use CLONE_PTRACE here.

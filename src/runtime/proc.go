@@ -130,6 +130,12 @@ goroutine准备的一般模式是：
 */
 
 var (
+	// 这里的全局 m0 和 g0 是比较特殊的存在
+	// m0 表示进程启动的第一个线程，也叫主线程
+	// g0 表示和 m0 绑定的 groutine，也是第一个 groutine，
+	// g0 上的栈是系统分配的栈，它仅用于负责调度的G, 且不指向任何可执行的函数，
+	// 但要注意的是每个m都会有一个自己的g0，而不仅仅是 m0 有 g0。
+	// 在调度或系统调用时会使用 g0 的栈空间
 	m0           m
 	g0           g
 	raceprocctx0 uintptr
@@ -593,9 +599,9 @@ func schedinit() {
 	// 设置m的最大值为10000
 	sched.maxmcount = 10000
 
-	// 栈的一下初始化
 	tracebackinit()
 	moduledataverify()
+	// 栈的一下初始化
 	stackinit()
 	// 内存分配起的初始化
 	mallocinit()
@@ -960,6 +966,9 @@ func casgstatus(gp *g, oldval, newval uint32) {
 // async wakeup that might come in from netpoll. If we see Gwaiting from the readgstatus,
 // it might have become Grunnable by the time we get to the cas. If we called casgstatus,
 // it would loop waiting for the status to go back to Gwaiting, which it never will.
+// casgstatus(gp, oldstatus, Gcopystack)，假设oldstatus是Gwaiting或Grunnable。返回旧的状态。
+// 不能直接调用casgstatus，因为我们正在与可能来自netpoll的异步唤醒竞争。如果我们从readgstatus看到Gwaiting，
+// 那么当我们到达cas时，它可能已经变成Grunnable了。如果我们调用casgstatus，它将循环等待状态返回Gwaiting，它永远不会这样做。
 //go:nosplit
 func casgcopystack(gp *g) uint32 {
 	for {
@@ -2076,7 +2085,7 @@ func newm1(mp *m) {
 		return
 	}
 	execLock.rlock() // Prevent process clone.
-	// 创建一个系统线程
+	// 创建一个系统线程，并且传入该 mp 绑定的 g0 的栈顶指针
 	newosproc(mp, unsafe.Pointer(mp.g0.stack.hi))
 	execLock.runlock()
 }
@@ -2434,9 +2443,9 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
-	// gogo由汇编实现
+	// gogo由汇编实现， runtime/asm_amd64.s
 	// 实现当前的G切换到gp，然后用JMP跳转到G的任务函数
-	// 当任务函数执行完后会调用goexit
+	// 当任务函数执行完后会调用 goexit
 	gogo(&gp.sched)
 }
 
@@ -3631,14 +3640,21 @@ func syscall_runtime_AfterExec() {
 }
 
 // Allocate a new g, with a stack big enough for stacksize bytes.
-// 新分配一个g对象，此时g的状态为_Gidle
+// 新分配一个g对象，并申请好 stacksize 大小的栈，此时g的状态为_Gidle
+// 初始栈的分布：
+/*
+
+ */
 func malg(stacksize int32) *g {
 	newg := new(g)
+	// print("newg: ", newg)
 	if stacksize >= 0 {
 		stacksize = round2(_StackSystem + stacksize)
 		systemstack(func() {
+			// 调用 stackalloc 分配栈
 			newg.stack = stackalloc(uint32(stacksize))
 		})
+		// 设置 stackguard
 		newg.stackguard0 = newg.stack.lo + _StackGuard
 		newg.stackguard1 = ^uintptr(0)
 	}
@@ -3686,6 +3702,7 @@ func newproc(siz int32, fn *funcval) {
 // 根据函数参数和函数地址，创建一个新的G，然后将这个G加入队列等待运行
 // callerpc是newproc函数的pc
 func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
+	print("fn=", fn.fn, " argp=", argp, " narg=", narg, " callerpc=", callerpc, "\n")
 	_g_ := getg()
 
 	if fn == nil {
@@ -3711,7 +3728,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	newg := gfget(_p_)
 	// 如果没获取到g，则新建一个
 	if newg == nil {
-		// 分配栈为_StackMin大小的G对象
+		// 分配栈为 2k 大小的G对象
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead) //将g的状态改为_Gdead
 		// 添加到allg数组，防止gc扫描清除掉
@@ -3725,18 +3742,22 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		throw("newproc1: new g is not Gdead")
 	}
 
+	// 参数大小+稍微一点空间
 	totalSize := 4*sys.RegSize + uintptr(siz) + sys.MinFrameSize // extra space in case of reads slightly beyond frame
 	totalSize += -totalSize & (sys.SpAlign - 1)                  // align to spAlign
+	// 新协程的栈顶计算，将栈顶减去参数占用的空间
 	sp := newg.stack.hi - totalSize
 	spArg := sp
-	if usesLR {
+	if usesLR { // amd64平台下 usesLR 为 false
 		// caller's LR
 		*(*uintptr)(unsafe.Pointer(sp)) = 0
 		prepGoExitFrame(sp)
 		spArg += sys.MinFrameSize
 	}
+
+	// 如果有参数
 	if narg > 0 {
-		// copy参数
+		// copy参数到栈上
 		memmove(unsafe.Pointer(spArg), unsafe.Pointer(argp), uintptr(narg))
 		// This is a stack-to-stack copy. If write barriers
 		// are enabled and the source stack is grey (the
@@ -3744,6 +3765,8 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		// barrier copy. We do this *after* the memmove
 		// because the destination stack may have garbage on
 		// it.
+		// 这是一个堆栈到堆栈的副本。如果启用了写入屏障并且源堆栈为灰色（目标始终为黑色），
+		// 则执行屏障复制。我们在* memmove之后执行此操作，因为目标堆栈上可能有垃圾。
 		if writeBarrier.needed && !_g_.m.curg.gcscandone {
 			f := findfunc(fn.fn)
 			stkmap := (*stackmap)(funcdata(f, _FUNCDATA_ArgsPointerMaps))
@@ -3757,7 +3780,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
-	// 保存goexit的地址到sched.pc，pc也就是函数返回后执行的地址，所以goroutine结束后会调用goexit
+	// 保存goexit的地址到sched.pc，后面会调节 goexit 作为任务函数返回后执行的地址，所以goroutine结束后会调用goexit
 	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
 	// sched.g保存当前新的G
 	newg.sched.g = guintptr(unsafe.Pointer(newg))

@@ -60,14 +60,57 @@ The linkers explore all possible call traces involving non-splitting
 functions to make sure that this limit cannot be violated.
 */
 
+// 堆栈布局参数。
+// 运行时（通过6c编译）和链接器（通过gcc编译）包括在内。
+
+// per-goroutine g->stackguard 设置为将 StackGuard 字节指向堆栈底部的上方。
+// 每个函数将其堆栈指针与 g->stackguard 进行比较，以检查溢出。要从具有微小帧的函数的检查序列中剪切一条指令，
+// 允许堆栈在堆栈保护下方突出 StackSmall 字节。具有大帧的功能不会打扰检查并始终调用morestack。
+// 序列是（对于amd64，其他类似）：
+
+// guard = g->stackguard
+// frame = function's stack frame size // 函数栈大小
+// argsize = size of function arguments (call + return) // 函数参数大小与返回参数的大小之和
+
+// stack frame size <= StackSmall:
+// 	CMPQ guard, SP
+// 	JHI 3(PC)
+// 	MOVQ m->morearg, $(argsize << 32)
+// 	CALL morestack(SB)
+
+// stack frame size > StackSmall but < StackBig
+// 	LEAQ (frame-StackSmall)(SP), R0
+// 	CMPQ guard, R0
+// 	JHI 3(PC)
+// 	MOVQ m->morearg, $(argsize << 32)
+// 	CALL morestack(SB)
+
+// stack frame size >= StackBig:
+// 	MOVQ m->morearg, $((argsize << 32) | frame)
+// 	CALL morestack(SB)
+
+// 底部 StackGuard-StackSmall 字节很重要：
+// 必须有足够的空间来执行拒绝检查堆栈溢出的函数，因为它们需要与实际调用者的帧（deferproc）相邻，
+// 或者因为它们处理即将发生的堆栈溢出（morestack）。
+
+// 例如，deferproc 可能会调用 malloc，它会执行上述检查之一（不分配完整帧），
+// 这可能会触发对 morestack 的调用。该序列需要适合堆栈的底部。在amd64上，morestack 的帧是40个字节，
+// deferproc 的帧是56个字节。这非常适合 StackGuard  - 底部的 StackSmall 字节。
+// 链接器探索涉及非拆分函数的所有可能的调用跟踪，以确保不会违反此限制。
+
 const (
 	// StackSystem is a number of additional bytes to add
 	// to each stack below the usual guard area for OS-specific
 	// purposes like signal handling. Used on Windows, Plan 9,
 	// and Darwin/ARM because they do not use a separate stack.
+	// StackSystem 是一些额外的字节，可添加到通常保护区域下方的每个堆栈中，
+	// 以用于特定于操作系统的特定目的，如信号处理。
+	// 在Windows，Plan 9和Darwin/ARM上使用，因为它们不使用单独的堆栈。
+	// 在Linux下，_StackSystem = 0
 	_StackSystem = sys.GoosWindows*512*sys.PtrSize + sys.GoosPlan9*512 + sys.GoosDarwin*sys.GoarchArm*1024
 
 	// The minimum size of stack used by Go code
+	// goroutine 初始栈大小-2k
 	_StackMin = 2048
 
 	// The minimum stack size to allocate.
@@ -86,19 +129,25 @@ const (
 	// in case SP - framesize wraps below zero.
 	// This value can be no bigger than the size of the unmapped
 	// space at zero.
+	// 需要大于此值的帧的函数使用额外的指令进行堆栈拆分检查，以避免在 SP-framesize 低于零的情况下溢出。
+	// 此值不能大于未映射空间的大小。
 	_StackBig = 4096
 
 	// The stack guard is a pointer this many bytes above the
 	// bottom of the stack.
+	// 堆栈保护是一个指针，它比堆栈底部高出这么多字节。
 	_StackGuard = 880*sys.StackGuardMultiplier + _StackSystem
 
 	// After a stack split check the SP is allowed to be this
 	// many bytes below the stack guard. This saves an instruction
 	// in the checking sequence for tiny frames.
+	// 在堆栈拆分检查后，允许SP在堆栈保护下面的这么多字节。
+	// 这样可以在微小帧的检查序列中保存指令。
 	_StackSmall = 128
 
 	// The maximum number of bytes that a chain of NOSPLIT
 	// functions can use.
+	// NOSPLIT函数链可以使用的最大字节数。
 	_StackLimit = _StackGuard - _StackSystem - _StackSmall
 )
 
@@ -142,11 +191,14 @@ var stackpool [_NumStackOrders]mSpanList
 var stackpoolmu mutex
 
 // Global pool of large stack spans.
+// 全局巨栈的表示，需要锁
 var stackLarge struct {
 	lock mutex
 	free [_MHeapMap_Bits]mSpanList // free lists by log_2(s.npages)
 }
 
+// 由 schedinit 调用，栈的初始化
+// 主要是栈内存池的初始化和全局巨栈的初始化
 func stackinit() {
 	if _StackCacheSize&_PageMask != 0 {
 		throw("cache size must be a multiple of page size")
@@ -171,6 +223,7 @@ func stacklog2(n uintptr) int {
 
 // Allocates a stack from the free pool. Must be called with
 // stackpoolmu held.
+// 从空闲池中分配堆栈。必须使用 stackpoolmu 进行调用。
 func stackpoolalloc(order uint8) gclinkptr {
 	list := &stackpool[order]
 	s := list.first
@@ -311,15 +364,21 @@ func stackcache_clear(c *mcache) {
 // resources and must not split the stack.
 //
 //go:systemstack
-// 分配nbytes的栈
+// 分配 nbytes 大小的栈，该函数必须在系统栈上运行，因为它使用每个P的资源，不得拆分堆栈
+// 调用 stackalloc 的几种情况：
+// 1. 新建一个G，分配 2k 的栈
+// 2. gfget 函数，也就是从空闲G列表或者G对象的实现
+// 3. copystack 栈拷贝的时候
 func stackalloc(n uint32) stack {
 	// Stackalloc must be called on scheduler stack, so that we
 	// never try to grow the stack during the code that stackalloc runs.
 	// Doing so would cause a deadlock (issue 1547).
 	thisg := getg()
+	// 如果不是g0，直接报错
 	if thisg != thisg.m.g0 {
 		throw("stackalloc not on scheduler stack")
 	}
+	// n 必须时2的倍数
 	if n&(n-1) != 0 {
 		throw("stack size not a power of 2")
 	}
@@ -339,6 +398,8 @@ func stackalloc(n uint32) stack {
 	// Small stacks are allocated with a fixed-size free-list allocator.
 	// If we need a stack of a bigger size, we fall back on allocating
 	// a dedicated span.
+	// 使用固定大小的空闲列表分配器分配小堆栈。
+	// 如果我们需要更大尺寸的堆栈，我们将重新分配专用 span 。
 	var v unsafe.Pointer
 	if n < _FixedStack<<_NumStackOrders && n < _StackCacheSize {
 		order := uint8(0)
@@ -358,6 +419,7 @@ func stackalloc(n uint32) stack {
 			x = stackpoolalloc(order)
 			unlock(&stackpoolmu)
 		} else {
+			// 尝试从本地栈缓存中得到内存
 			x = c.stackcache[order].list
 			if x.ptr() == nil {
 				stackcacherefill(c, order)
@@ -409,6 +471,7 @@ func stackalloc(n uint32) stack {
 // resources and must not split the stack.
 //
 //go:systemstack
+// 释放栈
 func stackfree(stk stack) {
 	gp := getg()
 	v := unsafe.Pointer(stk.lo)
@@ -827,6 +890,9 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 // particular, no other G may be writing to gp's stack (e.g., via a
 // channel operation). If sync is false, copystack protects against
 // concurrent channel operations.
+// 将gp的堆栈复制到不同大小的新堆栈。调用方必须将gp状态更改为Gcopystack。
+// 如果sync为真，则这是一个自触发的堆栈增长，特别是没有其他G可能正在写入gp的堆栈(例如，通过通道操作)。
+// 如果sync为false, copystack将防止并发通道操作。
 func copystack(gp *g, newsize uintptr, sync bool) {
 	if gp.syscallsp != 0 {
 		throw("stack growth not allowed in system call")
@@ -918,6 +984,9 @@ func round2(x int32) int32 {
 // stack growth from other nowritebarrierrec functions, but the
 // compiler doesn't check this.
 //
+// 需要更多堆栈时调用morestack。分配更大的堆栈并重新分配到新堆栈。对于固定的平摊代价，堆栈增长是乘法的。
+// g-进入时>atomicstatus为Grunning或Gscanrunning。如果GC试图停止这个g，那么它将preemptscan设置为true。
+// 这必须是nowritebarrierrec，因为它可以作为堆栈增长的一部分从nowritebarrierrec函数调用，但编译器不会检查这个。
 //go:nowritebarrierrec
 func newstack() {
 	thisg := getg()
@@ -1076,7 +1145,7 @@ func nilfunc() {
 
 // adjust Gobuf as if it executed a call to fn
 // and then did an immediate gosave.
-// 调节go运行现场的调用函数，然后
+// 调节go运行现场的调用函数，然后立即 gosave。
 func gostartcallfn(gobuf *gobuf, fv *funcval) {
 	var fn unsafe.Pointer
 	// 判断fv是否为nil
@@ -1092,16 +1161,11 @@ func gostartcallfn(gobuf *gobuf, fv *funcval) {
 // Maybe shrink the stack being used by gp.
 // Called at garbage collection time.
 // gp must be stopped, but the world need not be.
-// 收缩栈是在mgcmark.go中触发的，主要是在scanstack和markrootFreeGStacks函数中，也就是垃圾回收的时候会根据情况收缩栈
-// shrinkstack 收缩栈在必要的时候
+// 收缩栈是在 mgcmark.go 中触发的，主要是在 scanstack 和 markrootFreeGStacks 函数中，
+// 垃圾回收的时候会根据情况收缩栈 shrinkstack
 // 如果这个g是Gdead状态，则会释放栈空间
-// 如果已经使用的栈空间大于总栈空间的1/4，则不进行栈收缩，如果是在正在进行系统调用也不能进行栈缩放，因为system使用的参数可能在栈上面。
-// 缩小栈的空间为原来的一半
-// ---------------------
-// 作者：sydnash
-// 来源：CSDN
-// 原文：https://blog.csdn.net/sydnash/article/details/70263924
-// 版权声明：本文为博主原创文章，转载请附上博文链接！
+// 如果是在正在进行系统调用不能进行栈缩放，因为system使用的参数可能在栈上面。
+// 基本过程是计算当前使用的空间，小于栈空间的1/4的话，执行栈的收缩，将栈收缩为现在的1/2，否则直接返回。
 func shrinkstack(gp *g) {
 	gstatus := readgstatus(gp)
 	if gstatus&^_Gscan == _Gdead {
@@ -1165,6 +1229,7 @@ func shrinkstack(gp *g) {
 }
 
 // freeStackSpans frees unused stack spans at the end of GC.
+// 在 gcMarkTermination 时释放不使用的栈内存
 func freeStackSpans() {
 	lock(&stackpoolmu)
 
