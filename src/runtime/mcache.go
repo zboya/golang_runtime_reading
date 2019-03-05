@@ -40,6 +40,7 @@ type mcache struct {
 
 	alloc [numSpanClasses]*mspan // spans to allocate from, indexed by spanClass
 
+	// 本地栈缓存
 	stackcache [_NumStackOrders]stackfreelist
 
 	// Local allocator stats, flushed during GC.

@@ -348,6 +348,7 @@ type wincallbackcontext struct {
 // Stack describes a Go execution stack.
 // The bounds of the stack are exactly [lo, hi),
 // with no implicit data structures on either side.
+// stack 描述了Go执行堆栈。堆栈的边界正好是 [lo,hi)，两边都没有隐式数据结构。
 type stack struct {
 	lo uintptr
 	hi uintptr
@@ -397,13 +398,15 @@ type g struct {
 	traceseq       uint64   // trace event sequencer
 	tracelastp     puintptr // last P emitted an event for this goroutine
 	// G被锁定只在这个m上运行
-	lockedm    muintptr
-	sig        uint32
-	writebuf   []byte
-	sigcode0   uintptr
-	sigcode1   uintptr
-	sigpc      uintptr
-	gopc       uintptr // pc of go statement that created this goroutine
+	lockedm  muintptr
+	sig      uint32
+	writebuf []byte
+	sigcode0 uintptr
+	sigcode1 uintptr
+	sigpc    uintptr
+	// 调用者的 PC/IP
+	gopc uintptr // pc of go statement that created this goroutine
+	// 任务函数
 	startpc    uintptr // pc of goroutine function
 	racectx    uintptr
 	waiting    *sudog         // sudog structures this g is waiting on (that have a valid elem ptr); in lock order
