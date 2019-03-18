@@ -6,7 +6,7 @@ package sys
 
 // Declarations for runtime services implemented in C or assembly.
 
-// PtrSize表示指针的size
+// PtrSize表示指针的size，也代表了cpu架构是32位还是64位。
 const PtrSize = 4 << (^uintptr(0) >> 63) // unsafe.Sizeof(uintptr(0)) but an ideal const
 // Uintreg的size，不通平台不通大小，32bit为4，64bit为8
 const RegSize = 4 << (^Uintreg(0) >> 63)           // unsafe.Sizeof(uintreg(0)) but an ideal const

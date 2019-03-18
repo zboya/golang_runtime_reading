@@ -91,6 +91,11 @@ func skipPleaseUseCallersFrames()
 // PC in pcbuf can represent multiple calls). If a PC is partially skipped
 // and max > 1, pcbuf[1] will be runtime.skipPleaseUseCallersFrames+N where
 // N indicates the number of logical frames to skip in pcbuf[0].
+// 新栈上指针的调整，还未详细看
+// 因为Go中栈上的变量都有自己的地址，当你移动栈时，指向原栈的指针都将变为无效指针。
+// 幸运的是，只有在栈上分配的指针才能指向栈上的地址。这点对于内存安全是极其必要的，否则，程序可能会访问到已不再使用了的栈上的地址。
+// 由于我们需要知道那些需要被垃圾收集器回收的指针的位置，因此我们知道栈上哪些部分是指针。当我们移动栈时，
+// 我们可以更新栈里地指针使其指向新的目标地址，并且所有相关的指针都要被照顾到。
 func gentraceback(pc0, sp0, lr0 uintptr, gp *g, skip int, pcbuf *uintptr, max int, callback func(*stkframe, unsafe.Pointer) bool, v unsafe.Pointer, flags uint) int {
 	if skip > 0 && callback != nil {
 		throw("gentraceback callback cannot be used with non-zero skip")

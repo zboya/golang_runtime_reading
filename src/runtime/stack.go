@@ -173,7 +173,9 @@ const (
 	// Goroutine preemption request.
 	// Stored into g->stackguard0 to cause split stack check failure.
 	// Must be greater than any real sp.
-	// 0xfffffade in hex.
+	// in hex.
+	// Goroutine抢占请求。存储到 g->stackguard0 中导致拆分堆栈检查失败。
+	// 必须大于任何真正的sp。十六进制是 0xfffffade。
 	stackPreempt = uintptrMask & -1314
 
 	// Thread is forking.
@@ -224,6 +226,7 @@ func stacklog2(n uintptr) int {
 // Allocates a stack from the free pool. Must be called with
 // stackpoolmu held.
 // 从空闲池中分配堆栈。必须使用 stackpoolmu 进行调用。
+// 栈是有内存池的，以提高性能
 func stackpoolalloc(order uint8) gclinkptr {
 	list := &stackpool[order]
 	s := list.first
@@ -299,6 +302,7 @@ func stackpoolfree(x gclinkptr, order uint8) {
 // The pool is required to prevent unlimited growth of per-thread caches.
 //
 //go:systemstack
+// stackcacherefill/stackcacherelease 实现堆栈段的全局池。该池需要防止每线程缓存的无限增长。
 func stackcacherefill(c *mcache, order uint8) {
 	if stackDebug >= 1 {
 		print("stackcacherefill order=", order, "\n")
@@ -893,6 +897,17 @@ func syncadjustsudogs(gp *g, used uintptr, adjinfo *adjustinfo) uintptr {
 // 将gp的堆栈复制到不同大小的新堆栈。调用方必须将gp状态更改为Gcopystack。
 // 如果sync为真，则这是一个自触发的堆栈增长，特别是没有其他G可能正在写入gp的堆栈(例如，通过通道操作)。
 // 如果sync为false, copystack将防止并发通道操作。
+//
+// copystack 申请新的栈空间并将原有栈数据拷贝至这里
+// 拷贝栈听起来简单，但实际上它是一件有难度的事情。因为Go中栈上的变量都有自己的地址，一旦你拥有指向栈上变量的指针，
+// 这种情况下你就无法如你所愿。当你移动栈时，指向原栈的指针都将变为无效指针。
+// 幸运的是，只有在栈上分配的指针才能指向栈上的地址。这点对于内存安全是极其必要的，否则，程序可能会访问到已不再使用了的栈上的地址。
+// 由于我们需要知道那些需要被垃圾收集器回收的指针的位置，因此我们知道栈上哪些部分是指针。当我们移动栈时，
+// 我们可以更新栈里地指针使其指向新的目标地址，并且所有相关的指针都要被照顾到。
+// 由于我们使用垃圾回收的信息来协助完成栈拷贝，因此所有出现在栈上的函数都必须具备这些信息。但事情不总是这样的。
+// 在Go1.5之前，Go运行时的大部分代码是用C编写的，大量的运行时调用没有指针信息可用，这样就无法进行拷贝。一旦这种情况发生，
+// 又不得不退回到分段栈方案，并接受为其付出的高昂代价。所以Go运行时开发者大规模重写Go runtime。
+// 那些无法用Go重写的代码，比如调度器和垃圾收集器的内核，将在一个特殊的栈（应该就是g0栈，也叫系统栈）上执行，这个特殊栈的size由runtime开发者单独计算确定。
 func copystack(gp *g, newsize uintptr, sync bool) {
 	if gp.syscallsp != 0 {
 		throw("stack growth not allowed in system call")
@@ -911,6 +926,10 @@ func copystack(gp *g, newsize uintptr, sync bool) {
 	if stackDebug >= 1 {
 		print("copystack gp=", gp, " [", hex(old.lo), " ", hex(old.hi-used), " ", hex(old.hi), "]", " -> [", hex(new.lo), " ", hex(new.hi-used), " ", hex(new.hi), "]/", newsize, "\n")
 	}
+
+	// 目前copystack调整旧堆栈中的指针，然后将调整后的堆栈复制到新堆栈。除了通常令人困惑之外，这将使并发堆栈缩减更加困难。
+	// 切换它，以便我们首先复制堆栈，然后调整新堆栈上的指针（从不写入旧堆栈）。
+	// 这再次发布了CL 15996，但采用了一种不同且更简单的方法。 CL 15996仍然在调整新堆栈上的指针时走了旧堆栈。
 
 	// Compute adjustment.
 	var adjinfo adjustinfo
@@ -936,11 +955,22 @@ func copystack(gp *g, newsize uintptr, sync bool) {
 	}
 
 	// Copy the stack (or the rest of it) to the new location
+	// 拷贝栈到新的位置
 	memmove(unsafe.Pointer(new.hi-ncopy), unsafe.Pointer(old.hi-ncopy), ncopy)
+
+	// 使shrinkstack并发安全
+	// 目前shinkstack仅在STW期间是安全的，因为它调整与通道相关的堆栈指针并移动发送/接收堆栈槽而不与信道代码同步。当世界未被停止时，使其安全使用：
+	// 1）在调整Sudogs并复制可能包含发送/接收插槽的堆栈区域时，锁定G被阻塞的所有通道。
+	// 2）对于任何可能包含发送/接收时隙的堆栈帧，使用原子CAS调整指针以防止调整接收时隙中的指针和并发发送写入该接收时隙之间的竞争。
+	// 原则上，同步可以更精细。例如，我们考虑围绕sudog进行同步，如果收缩的G在发送/接收队列中足够远，这将允许涉及其他Gs的信道操作继续。
+	// 但是，使用通道锁定意味着通道代码中不需要额外的锁定。此外，堆栈缩小代码将通道锁定保持非常短的时间（远小于缩小堆栈所需的时间）。
+	// 这还没有使堆栈同时缩小;它只是让这样做安全。
+	// 这对go1和垃圾基准测试的影响可以忽略不计。
 
 	// Adjust remaining structures that have pointers into stacks.
 	// We have to do most of these before we traceback the new
 	// stack because gentraceback uses them.
+	// 调整具有指针到堆栈的剩余结构。我们必须在回溯新堆栈之前完成大部分操作，因为gentraceback会使用它们。
 	adjustctxt(gp, &adjinfo)
 	adjustdefers(gp, &adjinfo)
 	adjustpanics(gp, &adjinfo)
@@ -949,18 +979,21 @@ func copystack(gp *g, newsize uintptr, sync bool) {
 	}
 
 	// Swap out old stack for new one
+	// 切换到新栈
 	gp.stack = new
 	gp.stackguard0 = new.lo + _StackGuard // NOTE: might clobber a preempt request
 	gp.sched.sp = new.hi - used
 	gp.stktopsp += adjinfo.delta
 
 	// Adjust pointers in the new stack.
+	// 在新栈上调整指针
 	gentraceback(^uintptr(0), ^uintptr(0), 0, gp, 0, nil, 0x7fffffff, adjustframe, noescape(unsafe.Pointer(&adjinfo)), 0)
 
 	// free old stack
 	if stackPoisonCopy != 0 {
 		fillstack(old, 0xfc)
 	}
+	// 释放旧的栈
 	stackfree(old)
 }
 
@@ -988,7 +1021,10 @@ func round2(x int32) int32 {
 // g-进入时>atomicstatus为Grunning或Gscanrunning。如果GC试图停止这个g，那么它将preemptscan设置为true。
 // 这必须是nowritebarrierrec，因为它可以作为堆栈增长的一部分从nowritebarrierrec函数调用，但编译器不会检查这个。
 //go:nowritebarrierrec
+// newstack 用来实现栈的扩容
+// 包括 1，新分配栈 2，把旧栈上数据copy到新的栈
 func newstack() {
+	// thisg是申请堆栈扩容的协程
 	thisg := getg()
 	// TODO: double check all gp. shouldn't be getg().
 	if thisg.m.morebuf.g.ptr().stackguard0 == stackFork {
@@ -1033,6 +1069,8 @@ func newstack() {
 	// NOTE: stackguard0 may change underfoot, if another thread
 	// is about to try to preempt gp. Read it just once and use that same
 	// value now and below.
+	// 注意：如果另一个线程即将尝试抢占gp，则stackguard0可能会在发生变化。
+	// 所以现在读一次，判断是否被抢占。
 	preempt := atomic.Loaduintptr(&gp.stackguard0) == stackPreempt
 
 	// Be conservative about where we preempt.
@@ -1047,6 +1085,11 @@ func newstack() {
 	// If the GC is in some way dependent on this goroutine (for example,
 	// it needs a lock held by the goroutine), that small preemption turns
 	// into a real deadlock.
+	// 保守我们抢先的地方。我们感兴趣的是抢占用户Go代码，而不是运行时代码。如果我们持有锁，
+	// mallocing或preemption被禁用，请不要抢占。这个检查在newstack中非常早，因此在这种情况下，
+	// 即使状态从Grunning变为Gwaiting也不会发生。这种状态变化本身可以被视为一个小的先发制人，
+	// 因为GC可能会改变Gwaiting到Gscanwaiting，然后这个goroutine必须等待GC完成才能继续。
+	// 如果GC在某种程度上依赖于此goroutine（例如，它需要由goroutine保持锁定），那么小的抢占就会变成真正的死锁。
 	if preempt {
 		if thisg.m.locks != 0 || thisg.m.mallocing != 0 || thisg.m.preemptoff != "" || thisg.m.p.ptr().status != _Prunning {
 			// Let the goroutine keep running for now.
@@ -1117,6 +1160,7 @@ func newstack() {
 	}
 
 	// Allocate a bigger segment and move the stack.
+	// 分配为原来栈大小2倍的栈
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize * 2
 	if newsize > maxstacksize {
@@ -1126,15 +1170,20 @@ func newstack() {
 
 	// The goroutine must be executing in order to call newstack,
 	// so it must be Grunning (or Gscanrunning).
+	// 切换g的状态为 _Gcopystack
 	casgstatus(gp, _Grunning, _Gcopystack)
 
 	// The concurrent GC will not scan the stack while we are doing the copy since
 	// the gp is in a Gcopystack status.
+	// 由于gp处于Gcopystack状态，因此当我们进行复制时，并发GC不会扫描堆栈。
+	// 完成栈的拷贝
 	copystack(gp, newsize, true)
 	if stackDebug >= 1 {
 		print("stack grow done\n")
 	}
+	// 拷贝结束后，恢复 _Grunning 状态
 	casgstatus(gp, _Gcopystack, _Grunning)
+	// 调度执行 G 的任务函数
 	gogo(&gp.sched)
 }
 
@@ -1168,6 +1217,7 @@ func gostartcallfn(gobuf *gobuf, fv *funcval) {
 // 基本过程是计算当前使用的空间，小于栈空间的1/4的话，执行栈的收缩，将栈收缩为现在的1/2，否则直接返回。
 func shrinkstack(gp *g) {
 	gstatus := readgstatus(gp)
+	// 如果 _Gdead ，那么直接释放栈
 	if gstatus&^_Gscan == _Gdead {
 		if gp.stack.lo != 0 {
 			// Free whole stack - it will get reallocated
@@ -1195,6 +1245,7 @@ func shrinkstack(gp *g) {
 		return
 	}
 
+	// 收缩栈，变为原来的一半，当然这里的一半不能比最小栈还小
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize / 2
 	// Don't shrink the allocation below the minimum-sized stack
@@ -1207,13 +1258,17 @@ func shrinkstack(gp *g) {
 	// current stack. The currently used stack includes everything
 	// down to the SP plus the stack guard space that ensures
 	// there's room for nosplit functions.
+	// 计算当前正在使用的堆栈数量，如果gp使用的当前堆栈少于四分之一，则收缩堆栈。
+	// 当前使用的堆栈包括到SP的所有内容以及堆栈保护空间，以确保有nosplit功能的空间。
 	avail := gp.stack.hi - gp.stack.lo
+	// 如果使用空间超过1/4, 则不收缩
 	if used := gp.stack.hi - gp.sched.sp + _StackLimit; used >= avail/4 {
 		return
 	}
 
 	// We can't copy the stack if we're in a syscall.
 	// The syscall might have pointers into the stack.
+	// 系统调用的时候不能拷贝栈
 	if gp.syscallsp != 0 {
 		return
 	}
@@ -1225,6 +1280,7 @@ func shrinkstack(gp *g) {
 		print("shrinking stack ", oldsize, "->", newsize, "\n")
 	}
 
+	// 拷贝栈
 	copystack(gp, newsize, false)
 }
 
