@@ -159,6 +159,8 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 }
 
 func cgocallback(fn, frame unsafe.Pointer, framesize, ctxt uintptr)
+
+// 从g0栈切换到G栈，然后JMP到任务函数代码
 func gogo(buf *gobuf)
 func gosave(buf *gobuf)
 
