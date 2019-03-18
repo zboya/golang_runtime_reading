@@ -32,8 +32,8 @@
 * 2019-03-18 基本阅读完stack的分配
 
 ## 微信群
-![wechat](./wechat.jpeg)  
 想一起阅读的小伙伴可以加我微信`sheepbao-520`,加入阅读群
+![wechat](./wechat.jpeg)  
 
 ## github地址
 https://github.com/sheepbao/golang_runtime_reading
