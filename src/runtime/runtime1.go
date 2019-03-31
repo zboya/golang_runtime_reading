@@ -461,10 +461,11 @@ func acquirem() *m {
 }
 
 //go:nosplit
-// 将mp的locks减1
+// 将mp的locks减1，如果 locks == 0，表示没有任何一个 g 锁定了该M。
 func releasem(mp *m) {
 	_g_ := getg()
 	mp.locks--
+	// 如果没有G锁定了该M，且g是可抢占的，那么设置 stackguard0 = stackPreempt，表示可抢占
 	if mp.locks == 0 && _g_.preempt {
 		// restore the preemption request in case we've cleared it in newstack
 		_g_.stackguard0 = stackPreempt

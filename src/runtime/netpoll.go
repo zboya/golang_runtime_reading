@@ -31,6 +31,19 @@ import (
 //             io notification or timeout/close changes the state to READY or nil respectively
 //             and unparks the goroutine.
 // nil - nothing of the above.
+//
+// 集成网络轮询器（与平台无关的部分）。
+// 特定实现（epoll/kqueue）必须定义以下函数：
+// func netpollinit（）//初始化轮询器
+// func netpollopen（fd uintptr，pd * pollDesc）int32 //用于处理边缘触发的通知并将fd与pd关联。
+// 实现必须调用以下函数来表示pd已准备就绪。
+// func netpollready（gpp ** g，pd * pollDesc，mode int32）
+
+// pollDesc包含2个二进制信号量rg和wg，分别用于停放reader和writer goroutines。信号量可以处于以下状态：
+// pdReady - io准备就绪通知待处理; goroutine通过将状态更改为nil来使用通知。
+// pdWait - goroutine准备停在信号量上，但尚未停放 goroutine通过将状态更改为G指针来提交驻留，或者并发io通知将状态更改为READY， 或者并发超时/关闭会将状态更改为nil。
+// G指针 - 在信号量上阻塞了goroutine; io notification 或 timeout/close 分别将状态更改为READY或nil并取消停止goroutine。
+// nil - 以上都没有。
 const (
 	pdReady uintptr = 1
 	pdWait  uintptr = 2
@@ -83,6 +96,7 @@ var (
 )
 
 //go:linkname poll_runtime_pollServerInit internal/poll.runtime_pollServerInit
+// poll 服务初始化，只会调用一次
 func poll_runtime_pollServerInit() {
 	netpollinit()
 	atomic.Store(&netpollInited, 1)
@@ -101,6 +115,7 @@ func poll_runtime_pollServerDescriptor() uintptr {
 }
 
 //go:linkname poll_runtime_pollOpen internal/poll.runtime_pollOpen
+// netpollOpen 则在socket被创建出来后将其添加到epoll队列中，最终调用 netpollopen 来实现。
 func poll_runtime_pollOpen(fd uintptr) (*pollDesc, int) {
 	pd := pollcache.alloc()
 	lock(&pd.lock)

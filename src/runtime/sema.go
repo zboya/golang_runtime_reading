@@ -95,7 +95,7 @@ const (
 // 如果大于0，让信号量减一，返回； 如果等于0，
 // 就调用goparkunlock函数，把当前Goroutine放入该sema的等待队列，
 // 并把他设为等待状态。
-// http://ga0.github.io/golang/2015/10/11/golang-sync.html?utm_campaign=studygolang.com&utm_medium=studygolang.com&utm_source=studygolang.com
+// http://ga0.github.io/golang/2015/10/11/golang-sync.html
 func semacquire(addr *uint32) {
 	semacquire1(addr, false, 0)
 }
