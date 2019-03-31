@@ -168,6 +168,7 @@ var initSigmask sigset
 // 由runtime·rt0_go来调用，为真正的main函数准备
 // The main goroutine.
 func main() {
+	// 获取 main goroutine
 	g := getg()
 
 	// Racectx of m0->g0 is used only as the parent of the main goroutine.
@@ -177,6 +178,7 @@ func main() {
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
 	// Using decimal instead of binary GB and MB because
 	// they look nicer in the stack overflow failure message.
+	// 设置最大的栈大小
 	if sys.PtrSize == 8 {
 		maxstacksize = 1000000000
 	} else {
@@ -184,8 +186,10 @@ func main() {
 	}
 
 	// Allow newproc to start new Ms.
+	// 允许 newproc 启动 Ms
 	mainStarted = true
 
+	// 在系统栈上运行 sysmon
 	systemstack(func() {
 		// 分配一个新的m，运行sysmon系统后台监控（定期垃圾回收和并发调度）
 		newm(sysmon, nil)
@@ -311,12 +315,13 @@ func os_beforeExit() {
 }
 
 // start forcegc helper goroutine
-// 初始化forcegchelper goroutine
+// 初始化 forcegchelper goroutine
 // 用来执行强制gc
 func init() {
 	go forcegchelper()
 }
 
+// 用来执行强制gc
 func forcegchelper() {
 	forcegc.g = getg()
 	for {
@@ -350,6 +355,7 @@ func Gosched() {
 // goschedguarded yields the processor like gosched, but also checks
 // for forbidden states and opts out of the yield in those cases.
 //go:nosplit
+// goschedguarded 会像处理 gosched 一样让出处理器，但也检查禁止状态并在这些情况下选择退让。
 func goschedguarded() {
 	mcall(goschedguarded_m)
 }
@@ -359,14 +365,15 @@ func goschedguarded() {
 // unlockf must not access this G's stack, as it may be moved between
 // the call to gopark and the call to unlockf.
 //
-// channel,Go语言的定时器、网络IO操作都会调用gopark。
-// unlockf解锁函数指针，lock Lock指针，reason park的原因
-// 暂停当前G的运行，用unlockf作为判断是否恢复运行，所以该G必须主动恢复，
+// channel,Go语言的定时器、网络IO操作都会调用 gopark。
+// unlockf 解锁函数指针，lock Lock 指针，reason park 的原因
+// 暂停当前G的运行，用 unlockf 作为判断是否恢复运行，所以该G必须主动恢复，
 // 否则该任务会遗失。
 func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason string, traceEv byte, traceskip int) {
 	mp := acquirem()
 	gp := mp.curg
 	status := readgstatus(gp)
+	// 当前的g必须正在运行
 	if status != _Grunning && status != _Gscanrunning {
 		throw("gopark: bad g status")
 	}
@@ -382,6 +389,8 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason s
 
 // Puts the current goroutine into a waiting state and unlocks the lock.
 // The goroutine can be made runnable again by calling goready(gp).
+// 将当前 goroutine 置于等待状态并解锁锁定。
+// 通过调用 goready（gp）可以使 goroutine 再次运行。
 func goparkunlock(lock *mutex, reason string, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
@@ -403,6 +412,10 @@ func acquireSudog() *sudog {
 	// Break the cycle by doing acquirem/releasem around new(sudog).
 	// The acquirem/releasem increments m.locks during new(sudog),
 	// which keeps the garbage collector from being invoked.
+	// 精致的舞蹈：信号量实现调用acquireSudog，acquireSudog调用new（sudog），
+	// 新调用malloc，malloc可以调用垃圾收集器，垃圾收集器调用stopTheWorld中的信号量实现。
+	// 通过在new（sudog）周围执行acquirem / releasem来打破循环。在新的（sudog）期间，
+	// acquirem / releasem增加m.locks，这使得垃圾收集器不会被调用。
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == 0 {

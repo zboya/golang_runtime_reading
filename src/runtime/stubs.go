@@ -19,6 +19,9 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg返回指向当前g的指针。
 // 编译器将对此函数的调用重写为直接获取g的指令（来自TLS或来自专用寄存器）。
 // https://groups.google.com/forum/#!searchin/golang-nuts/getg|sort:date/golang-nuts/KgPOzaMylHo/nCX0K9E4AQAJ
+// 要获取当前用户g，请使用`getg().m.curg`。
+// `getg()`单独返回当前g，但是当在系统或信号堆栈上执行时，这将分别返回当前M的“g0”或“gsignal”。这通常不是你想要的。
+// 要确定您是在用户堆栈还是系统堆栈上运行，请使用`getg() == getg().m.curg`。
 func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),

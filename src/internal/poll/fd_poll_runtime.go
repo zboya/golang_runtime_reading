@@ -16,6 +16,7 @@ import (
 // runtimeNano returns the current value of the runtime clock in nanoseconds.
 func runtimeNano() int64
 
+// 下面的函数由runtime实现
 func runtime_pollServerInit()
 func runtime_pollServerDescriptor() uintptr
 func runtime_pollOpen(fd uintptr) (uintptr, int)

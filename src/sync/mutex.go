@@ -22,6 +22,7 @@ func throw(string) // provided by runtime
 // The zero value for a Mutex is an unlocked mutex.
 //
 // A Mutex must not be copied after first use.
+// 互斥锁的实现
 type Mutex struct {
 	state int32
 	sema  uint32
@@ -63,6 +64,19 @@ const (
 	// Normal mode has considerably better performance as a goroutine can acquire
 	// a mutex several times in a row even if there are blocked waiters.
 	// Starvation mode is important to prevent pathological cases of tail latency.
+	// 互斥量可分为两种操作模式:正常和饥饿。
+	// 在正常模式下，等待的goroutines按照FIFO（先进先出）顺序排队，但是goroutine被唤醒之后并不能立即得到mutex锁，
+	// 它需要与新到达的goroutine争夺mutex锁。
+	// 因为新到达的goroutine已经在CPU上运行了，所以被唤醒的goroutine很大概率是争夺mutex锁是失败的。出现这样的情况时候，
+	// 被唤醒的goroutine需要排队在队列的前面。
+	// 如果被唤醒的goroutine有超过1ms没有获取到mutex锁，那么它就会变为饥饿模式。
+	// 在饥饿模式中，mutex锁直接从解锁的goroutine交给队列前面的goroutine。
+	// 新达到的goroutine也不会去争夺mutex锁（即使没有锁，也不能去自旋），而是到等待队列尾部排队。
+	// 在饥饿模式下，有一个goroutine获取到mutex锁了，如果它满足下条件中的任意一个，mutex将会切换回去正常模式：
+	// 1. 是等待队列中的最后一个goroutine
+	// 2. 它的等待时间不超过1ms。
+	// 正常模式有更好的性能，因为goroutine可以连续多次获得mutex锁；
+	// 饥饿模式对于预防队列尾部goroutine一致无法获取mutex锁的问题。
 	starvationThresholdNs = 1e6
 )
 

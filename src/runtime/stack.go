@@ -1163,6 +1163,9 @@ func newstack() {
 	// 分配为原来栈大小2倍的栈
 	oldsize := gp.stack.hi - gp.stack.lo
 	newsize := oldsize * 2
+	// 检查栈的值是否超过最大值，最大值如下
+	// 64位系统 maxstacksize = 1000000000
+	// 32位系统	maxstacksize = 250000000
 	if newsize > maxstacksize {
 		print("runtime: goroutine stack exceeds ", maxstacksize, "-byte limit\n")
 		throw("stack overflow")
