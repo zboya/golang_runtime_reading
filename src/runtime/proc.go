@@ -403,6 +403,7 @@ func goready(gp *g, traceskip int) {
 }
 
 //go:nosplit
+// 从 p 的 sugog 缓存中获取一个 sudog
 func acquireSudog() *sudog {
 	// Delicate dance: the semaphore implementation calls
 	// acquireSudog, acquireSudog calls new(sudog),
@@ -412,10 +413,10 @@ func acquireSudog() *sudog {
 	// Break the cycle by doing acquirem/releasem around new(sudog).
 	// The acquirem/releasem increments m.locks during new(sudog),
 	// which keeps the garbage collector from being invoked.
-	// 精致的舞蹈：信号量实现调用acquireSudog，acquireSudog调用new（sudog），
+	// 信号量实现调用acquireSudog，acquireSudog调用new（sudog），
 	// 新调用malloc，malloc可以调用垃圾收集器，垃圾收集器调用stopTheWorld中的信号量实现。
-	// 通过在new（sudog）周围执行acquirem / releasem来打破循环。在新的（sudog）期间，
-	// acquirem / releasem增加m.locks，这使得垃圾收集器不会被调用。
+	// 通过在new（sudog）周围执行acquirem/releasem来打破循环。在新的（sudog）期间，
+	// acquirem/releasem增加m.locks，这使得垃圾收集器不会被调用。
 	mp := acquirem()
 	pp := mp.p.ptr()
 	if len(pp.sudogcache) == 0 {
@@ -518,6 +519,15 @@ func releaseSudog(s *sudog) {
 // 而对于传入一个函数来说, data是一个指向某个函数位置的指针.
 // 所以这是一个指向指针的指针. 要取函数位置的话, 用两个**。
 // 为啥要用interface多一层转换, 因为不同的函数类型不同, 所以得用interface
+/*
++-----+
+|_type|
++-----+      +-----+      +------+
+|data | ---->|f ptr| ---->|f addr|
++-----+      +-----+      +------+
+
+`f ptr`指向函数起始地址的指针
+*/
 func funcPC(f interface{}) uintptr {
 	return **(**uintptr)(add(unsafe.Pointer(&f), sys.PtrSize))
 }
@@ -4703,11 +4713,12 @@ var forcegcperiod int64 = 2 * 60 * 1e9 // 2min
 // sysmon中有netpool(获取fd事件), retake(抢占), forcegc(按时间强制执行gc),
 // scavenge heap(释放自由列表中多余的项减少内存占用)等处理.
 // cgo和syscall时，p的状态会被设置为_Psyscall，sysmon周期性地检查并retake p，
-// 如果发现p处于这个状态且超过10ms就会强制性收回p，m从cgo和syscall返回后会重新尝试拿p，进入调度循环
+// 如果发现p处于这个状态且超过10ms就会强制性收回p，m从cgo和syscall返回后会重新尝试拿p，进入调度循环。
+// 检测系统的运行情况，比如 checkdead()
 func sysmon() {
 	lock(&sched.lock)
 	sched.nmsys++
-	// 判断程序是否结束
+	// 判断程序是否死锁
 	checkdead()
 	unlock(&sched.lock)
 
