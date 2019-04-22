@@ -128,6 +128,13 @@ type mutex struct {
 //
 // notesleep/notetsleep are generally called on g0,
 // notetsleepg is similar to notetsleep but is called on user g.
+// 一次性事件的睡眠和唤醒。在任何对notesleep或notewakeup的调用之前，必须调用noteclear来初始化Note。
+// 那么，正好一个线程可以调用notesleep，而一个线程可以调用notewakeup（一次）。一旦调用了notewakeup，noteleep将返回。
+// 未来的noteleep将立即返回。必须在之前的noteleep返回之后调用后续noteclear，例如注意到唤醒之后不允许直接调用noteclear。
+//
+// notetsleep就像是 notesleep ，但是在给定的纳秒数后唤醒，即使事件尚未发生。如果goroutine使用notetsleep提前唤醒，
+// 它必须等待调用noteclear，直到可以确定没有其他goroutine正在调用notewakeup。 notesleep/notetsleep 通常在g0上调用，
+// notetsleepg类似于notetsleep但在用户g上调用。
 type note struct {
 	// Futex-based impl treats it as uint32 key,
 	// while sema-based impl as M* waitm.
@@ -383,9 +390,10 @@ type g struct {
 	// 唯一的goroutine的ID
 	goid int64
 	// g被阻塞的大体时间
-	waitsince      int64  // approx time when the g become blocked
-	waitreason     string // if status==Gwaiting
-	schedlink      guintptr
+	waitsince  int64  // approx time when the g become blocked
+	waitreason string // if status==Gwaiting
+	schedlink  guintptr
+	// 标记是否可抢占
 	preempt        bool     // preemption signal, duplicates stackguard0 = stackpreempt
 	paniconfault   bool     // panic (instead of crash) on unexpected fault address
 	preemptscan    bool     // preempted g does scan for gc
@@ -488,11 +496,13 @@ type m struct {
 	// 锁定g在当前m上执行，而不会切换到其他m，一般cgo调用或者手动调用LockOSThread()才会有值
 	lockedg guintptr
 	// thread创建的栈
-	createstack   [32]uintptr    // stack that created this thread.
-	freglo        [16]uint32     // d[i] lsb and f[i]
-	freghi        [16]uint32     // d[i] msb and f[i+16]
-	fflag         uint32         // floating point compare flags
-	lockedExt     uint32         // tracking for external LockOSThread
+	createstack [32]uintptr // stack that created this thread.
+	freglo      [16]uint32  // d[i] lsb and f[i]
+	freghi      [16]uint32  // d[i] msb and f[i+16]
+	fflag       uint32      // floating point compare flags
+	// 用户锁定M的标记
+	lockedExt uint32 // tracking for external LockOSThread
+	// runtime 内部锁定M的标记
 	lockedInt     uint32         // tracking for internal lockOSThread
 	nextwaitm     muintptr       // next m waiting for lock
 	waitunlockf   unsafe.Pointer // todo go func(*g, unsafe.pointer) bool
