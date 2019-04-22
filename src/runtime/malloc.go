@@ -944,6 +944,8 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// collector. Otherwise, on weakly ordered machines,
 	// the garbage collector could follow a pointer to x,
 	// but see uninitialized memory or stale heap bits.
+	// 确保上面的存储将x初始化为类型安全的内存并设置堆位在调用者可以对垃圾收集器进行x观察之前发生。
+	// 否则，在弱有序的机器上，垃圾收集器可以跟随指向x的指针，但是看到未初始化的内存或过时的堆位。
 	publicationBarrier()
 
 	// Allocate black during GC.

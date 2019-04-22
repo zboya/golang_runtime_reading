@@ -103,12 +103,12 @@ var buildVersion = sys.TheVersion
 因为额外的线程将立即park而发现不了任何工作要做。
 
 当前的实现方法：
-当我们准备一个goroutine时，如果有一个空闲的P并且没有“自旋”的工作线程，我们取消另外一个线程。
 
-如果工作线程本地队列、全局运行队列、netpoller中找不到工作，则认为它正在自旋;
+当我们准备调度一个goroutine时，
+如果有一个空闲的P并且没有“自旋”的工作线程，我们取消另外一个线程。
+如果工作线程在本地队列、全局运行队列、netpoller中找不到工作，则认为它正在自旋;
 自旋状态用m.spinning和sched.nmspinning表示。以这种方式park的线程也被认为是自旋的;
-
-我们不做goroutine切换所以这样的线程最初失去了工作。
+因为这样的线程已经失去了工作，我们不做goroutine切换。
 在parking前，自旋线程会在每个P运行队列中进行一些自旋工作。
 如果自旋线程找到工作，它将自己从自旋状态中移出并继续执行。
 如果找不到工作，它会自动退出自旋状态，然后parks。
@@ -126,7 +126,7 @@ goroutine准备的一般模式是：
 ＃StoreLoad样式的内存屏障，检查所有每个P工作队列的新工作。
 请注意，所有这些复杂性都不适用于全局运行队列，
 因为我们在提交到全局队列时并不松散于线程解除挂起。
-另请参阅有关nmspinning操作的注释。
+另请参阅有关 nmspinning 操作的注释。
 */
 
 var (
@@ -165,7 +165,7 @@ var runtimeInitTime int64
 // Value to use for signal mask for newly created M's.
 var initSigmask sigset
 
-// 由runtime·rt0_go来调用，为真正的main函数准备
+// 由 asm_amd64.s 中 runtime·rt0_go来调用，为真正的main函数准备
 // The main goroutine.
 func main() {
 	// 获取 main goroutine
@@ -191,7 +191,7 @@ func main() {
 
 	// 在系统栈上运行 sysmon
 	systemstack(func() {
-		// 分配一个新的m，运行sysmon系统后台监控（定期垃圾回收和并发调度）
+		// 分配一个新的m，运行sysmon系统后台监控（定期垃圾回收和调度抢占）
 		newm(sysmon, nil)
 	})
 
@@ -208,6 +208,7 @@ func main() {
 		throw("runtime.main not on m0")
 	}
 
+	// runtime 内部 init 函数的执行
 	runtime_init() // must be before defer
 	// 如果获取系统时间的ns为0，直接panic
 	if nanotime() == 0 {
@@ -516,7 +517,7 @@ func releaseSudog(s *sudog) {
 // 	data  unsafe.Pointer
 // }
 // &f 得到 eface 的地址，然后加上 sys.PtrSize 就是得到f这个 eface 里data字段，
-// 而对于传入一个函数来说, data是一个指向某个函数位置的指针.
+// 而对于传入一个函数来说, data是一个指向某个函数名的指针.
 // 所以这是一个指向指针的指针. 要取函数位置的话, 用两个**。
 // 为啥要用interface多一层转换, 因为不同的函数类型不同, 所以得用interface
 /*
@@ -1443,7 +1444,7 @@ func mstart1(dummy int32) {
 		mstartm0()
 	}
 
-	// 如果有m的起始任务函数，则执行
+	// 如果有m的起始任务函数，则执行，比如 sysmon 函数
 	if fn := _g_.m.mstartfn; fn != nil {
 		fn()
 	}
@@ -1474,6 +1475,7 @@ func mstartm0() {
 		cgoHasExtraM = true
 		newextram()
 	}
+	// 系统信号量的初始化
 	initsig(false)
 }
 
@@ -2031,6 +2033,7 @@ var execLock rwmutex
 // newmHandoff contains a list of m structures that need new OS threads.
 // This is used by newm in situations where newm itself can't safely
 // start an OS thread.
+// newmHandoff 包含需要新OS线程的m个结构的列表。在newm本身无法安全启动OS线程的情况下，newm会使用它。
 var newmHandoff struct {
 	lock mutex
 
@@ -2054,6 +2057,7 @@ var newmHandoff struct {
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 // 创建一个新的m，它将从fn或者调度程序开始
+// fn需要是静态的，而不是堆分配的闭包。
 func newm(fn func(), _p_ *p) {
 	// 根据fn和p和绑定一个m对象
 	mp := allocm(_p_, fn)
@@ -2072,6 +2076,8 @@ func newm(fn func(), _p_ *p) {
 		//
 		// TODO: This may be unnecessary on Windows, which
 		// doesn't model thread creation off fork.
+		// 我们处于锁定的M或可能由C启动的线程。此线程的内核状态可能很奇怪（用户可能已将其锁定为此目的）。
+		// 我们不想将其克隆到另一个线程中。相反，请求一个已知良好的线程为我们创建线程。
 		lock(&newmHandoff.lock)
 		if newmHandoff.haveTemplateThread == 0 {
 			throw("on a locked thread with no template thread")
@@ -2109,6 +2115,7 @@ func newm1(mp *m) {
 	}
 	execLock.rlock() // Prevent process clone.
 	// 创建一个系统线程，并且传入该 mp 绑定的 g0 的栈顶指针
+	// 让系统线程执行 mstart 函数，后面的逻辑都在 mstart 函数中
 	newosproc(mp, unsafe.Pointer(mp.g0.stack.hi))
 	execLock.runlock()
 }
@@ -2117,6 +2124,8 @@ func newm1(mp *m) {
 // running.
 //
 // The calling thread must itself be in a known-good state.
+// startTemplateThread 启动模板线程（如果尚未运行）。
+// 调用线程本身必须处于已知良好状态。
 func startTemplateThread() {
 	if !atomic.Cas(&newmHandoff.haveTemplateThread, 0, 1) {
 		return
@@ -2136,6 +2145,9 @@ func startTemplateThread() {
 // barriers.
 //
 //go:nowritebarrierrec
+// tmeplateThread 是处于已知良好状态的线程，仅当调用线程可能不是良好状态时，该线程仅用于以已知良好状态启动新线程。
+// 许多程序从不需要这个，所以当我们第一次进入可能导致在未知状态的线程上运行的状态时，templateThread 会懒得开始。
+// templateThread在没有P的M上运行，因此它必须没有写入障碍。
 func templateThread() {
 	lock(&sched.lock)
 	sched.nmsys++
@@ -2265,6 +2277,7 @@ func startm(_p_ *p, spinning bool) {
 // Hands off P from syscall or locked M.
 // Always runs without a P, so write barriers are not allowed.
 //go:nowritebarrierrec
+// p的切换，系统调用或者绑定M时使用
 func handoffp(_p_ *p) {
 	// handoffp must start an M in any situation where
 	// findrunnable would return a G to run on _p_.
@@ -3708,7 +3721,7 @@ address		   +------------+ ---+
         	   |	y		|	 |
 higher		   +------------+ ---+
 */
-// 􏳄 用fn + PtrSize 获取第一个参数的地址，也就是argp
+// 用fn + PtrSize 获取第一个参数的地址，也就是argp
 // 用siz - 8 获取pc地址
 func newproc(siz int32, fn *funcval) {
 	argp := add(unsafe.Pointer(&fn), sys.PtrSize)
@@ -4010,7 +4023,9 @@ func LockOSThread() {
 }
 
 //go:nosplit
+// lockOSThread 实现 g 和 m 的绑定
 func lockOSThread() {
+	// 设置 m.lockedInt 加1
 	getg().m.lockedInt++
 	dolockOSThread()
 }
@@ -4625,6 +4640,9 @@ func incidlelocked(v int32) {
 // Check for deadlock situation.
 // The check is based on number of running M's, if 0 -> deadlock.
 // sched.lock must be held.
+// 检查死锁情况。
+// 检查基于正在运行的M的数量，如果是0表示死锁。
+// 必须持有sched.lock。
 func checkdead() {
 	// For -buildmode=c-shared or -buildmode=c-archive it's OK if
 	// there are no running goroutines. The calling program is
@@ -4959,6 +4977,11 @@ func preemptall() bool {
 // The actual preemption will happen at some point in the future
 // and will be indicated by the gp->status no longer being
 // Grunning
+// 告诉在处理器P上运行的goroutine停止。这个功能纯粹是尽力而为。
+// 它可能会错误地通知goroutine。它可以发送错误的goroutine。
+// 即使它通知正确的goroutine，如果它同时执行newstack，那goroutine可能会忽略该请求。
+// 不需要锁定。如果发出抢占请求，则返回true。实际的抢占将在未来的某个时刻发生，
+// 并且将由gp->状态表示不再是Grunning
 func preemptone(_p_ *p) bool {
 	mp := _p_.m.ptr()
 	if mp == nil || mp == getg().m {
@@ -4969,18 +4992,22 @@ func preemptone(_p_ *p) bool {
 		return false
 	}
 
+	// 标记可抢占
 	gp.preempt = true
 
 	// Every call in a go routine checks for stack overflow by
 	// comparing the current stack pointer to gp->stackguard0.
 	// Setting gp->stackguard0 to StackPreempt folds
 	// preemption into the normal stack overflow check.
+	// gorotuine 中的每个调用都会通过将当前堆栈指针与 gp->stackguard0 进行比较来检查堆栈溢出。
+	// 将 gp->stackguard0 设置为 stackPreempt 会将抢占折叠为正常的堆栈溢出检查。
 	gp.stackguard0 = stackPreempt
 	return true
 }
 
 var starttime int64
 
+// debug日志输出函数
 func schedtrace(detailed bool) {
 	now := nanotime()
 	if starttime == 0 {

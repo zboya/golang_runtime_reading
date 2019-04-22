@@ -362,10 +362,13 @@ TEXT runtime·gogo(SB), NOSPLIT, $16-8
 // Switch to m->g0's stack, call fn(g).
 // Fn must never return. It should gogo(&g->sched)
 // to keep running g.
+// 切换到该m的g0中取调用函数fn
 TEXT runtime·mcall(SB), NOSPLIT, $0-8
 	MOVQ	fn+0(FP), DI
 	
 	get_tls(CX)
+	// 获取当前正在运行的协程g信息 
+	// 将其状态保存在g.sched变量 
 	MOVQ	g(CX), AX	// save state in g->sched
 	MOVQ	0(SP), BX	// caller's PC
 	MOVQ	BX, (g_sched+gobuf_pc)(AX)
@@ -383,10 +386,13 @@ TEXT runtime·mcall(SB), NOSPLIT, $0-8
 	MOVQ	$runtime·badmcall(SB), AX
 	JMP	AX
 	MOVQ	SI, g(CX)	// g = m->g0
+	// 切换到m->g0堆栈
 	MOVQ	(g_sched+gobuf_sp)(SI), SP	// sp = m->g0->sched.sp
+	// 参数AX为之前运行的协程g
 	PUSHQ	AX
 	MOVQ	DI, DX
 	MOVQ	0(DI), DI
+	// 在m->g0堆栈上执行函数fn
 	CALL	DI
 	POPQ	AX
 	MOVQ	$runtime·badmcall2(SB), AX

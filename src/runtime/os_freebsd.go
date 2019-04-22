@@ -235,6 +235,8 @@ func mpreinit(mp *m) {
 
 // Called to initialize a new m (including the bootstrap m).
 // Called on the new thread, cannot allocate memory.
+// 调用初始化一个新的m（包括bootstrap m）。
+// 在新线程上调用，无法分配内存。
 func minit() {
 	// m.procid is a uint64, but thr_new writes a uint32 on 32-bit systems.
 	// Fix it up. (Only matters on big-endian, but be clean anyway.)
