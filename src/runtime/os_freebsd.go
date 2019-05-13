@@ -259,6 +259,7 @@ func minit() {
 		sigaltstack(&st, nil)
 	}
 
+	// 初始化新m时调用minitSignals来设置线程的备用信号堆栈和信号掩码。
 	minitSignals()
 }
 

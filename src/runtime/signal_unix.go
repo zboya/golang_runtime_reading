@@ -713,6 +713,7 @@ func unblocksig(sig uint32) {
 
 // minitSignals is called when initializing a new m to set the
 // thread's alternate signal stack and signal mask.
+// 初始化新m时调用minitSignals来设置线程的备用信号堆栈和信号掩码。
 func minitSignals() {
 	minitSignalStack()
 	minitSignalMask()
