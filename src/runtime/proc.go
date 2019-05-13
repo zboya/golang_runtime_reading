@@ -204,11 +204,12 @@ func main() {
 	// main goroutine会绑定一个M
 	lockOSThread()
 
+	// 确保是主线程
 	if g.m != &m0 {
 		throw("runtime.main not on m0")
 	}
 
-	// runtime 内部 init 函数的执行
+	// runtime 内部 init 函数的执行，编译器动态生成的。
 	runtime_init() // must be before defer
 	// 如果获取系统时间的ns为0，直接panic
 	if nanotime() == 0 {
@@ -252,7 +253,7 @@ func main() {
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
 
-	// 执行init函数 main_init()
+	// 执行init函数，编译器动态生成的，包括用户定义的所有的init函数。
 	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	close(main_init_done)
@@ -625,9 +626,9 @@ func schedinit() {
 
 	tracebackinit()
 	moduledataverify()
-	// 栈的一下初始化
+	// 栈的初始化
 	stackinit()
-	// 内存分配起的初始化
+	// 内存分配初始化
 	mallocinit()
 	mcommoninit(_g_.m)
 
@@ -1387,6 +1388,7 @@ go func() ---> | G | ---> | P | local | <=== balance ===> | global | <--//--- | 
               6. 清理现场并且重新进入调度循环
 */
 func mstart() {
+	// 这里获取的g是g0，在系统堆栈
 	_g_ := getg()
 
 	// 检查栈边界
@@ -1396,13 +1398,14 @@ func mstart() {
 		// Cgo may have left stack size in stack.hi.
 		size := _g_.stack.hi
 		if size == 0 {
-			size = 8192 * sys.StackGuardMultiplier
+			size = 8192 * sys.StackGuardMultiplier // 8MB大小的栈
 		}
 		_g_.stack.hi = uintptr(noescape(unsafe.Pointer(&size)))
 		_g_.stack.lo = _g_.stack.hi - size + 1024
 	}
 	// Initialize stack guards so that we can start calling
 	// both Go and C functions with stack growth prologues.
+	// 初始化堆栈保护，以便我们可以开始使用堆栈增长序列调用Go和C函数。
 	_g_.stackguard0 = _g_.stack.lo + _StackGuard
 	_g_.stackguard1 = _g_.stackguard0
 
@@ -1422,6 +1425,8 @@ func mstart() {
 func mstart1(dummy int32) {
 	_g_ := getg()
 
+	// 确保g是系统栈上的g0
+	// 调度器只在g0上执行
 	if _g_ != _g_.m.g0 {
 		throw("bad runtime·mstart")
 	}
@@ -1430,21 +1435,22 @@ func mstart1(dummy int32) {
 	// for terminating the thread.
 	// We're never coming back to mstart1 after we call schedule,
 	// so other calls can reuse the current frame.
-	// 记录mstart1 函数结束后的地址pc和mstart1 函数参数到当前g的运行现场
+	// 记录 mstart1 函数结束后的地址pc和mstart1 函数参数到当前g的运行现场
 	save(getcallerpc(), getcallersp(unsafe.Pointer(&dummy)))
 	asminit()
-	// 初始化m
+	// 初始化m，主要是设置线程的备用信号堆栈和信号掩码
 	minit()
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
 	// 如果当前g的m是初始m0，执行mstartm0()
 	if _g_.m == &m0 {
-		// 对于初始m，需要一些特殊处理
+		// 对于初始m，需要一些特殊处理，主要是设置系统信号量的处理函数
 		mstartm0()
 	}
 
 	// 如果有m的起始任务函数，则执行，比如 sysmon 函数
+	// 对于m0来说，是没有 mstartfn 的
 	if fn := _g_.m.mstartfn; fn != nil {
 		fn()
 	}
@@ -1452,7 +1458,7 @@ func mstart1(dummy int32) {
 	if _g_.m.helpgc != 0 {
 		_g_.m.helpgc = 0
 		stopm()
-	} else if _g_.m != &m0 {
+	} else if _g_.m != &m0 { // 如果不是m0，需要绑定p
 		// 绑定p
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
@@ -2177,7 +2183,7 @@ func templateThread() {
 
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
-// 停止M，使其休眠，但不会被系统回收
+// 停止M，使其休眠，并把该m放进空闲m的链表中。一般会调用 startm 来唤醒休眠的m
 // 调用notesleep使M进入休眠
 // 线程可以处于三种状态: 等待中(Waiting)、待执行(Runnable)或执行中(Executing)。
 func stopm() {
@@ -2341,6 +2347,7 @@ func wakep() {
 	if !atomic.Cas(&sched.nmspinning, 0, 1) {
 		return
 	}
+	print("startm\n")
 	startm(nil, true)
 }
 
@@ -2496,7 +2503,7 @@ func findrunnable() (gp *g, inheritTime bool) {
 	// an M.
 	// 此处和handoffp中的条件必须一致：如果findrunnable将返回G运行，则handoffp必须启动M.
 top:
-	// 当前的P
+	// 当前m绑定的p
 	_p_ := _g_.m.p.ptr()
 	// 如果gc正等着运行，停止M，也就是STW
 	if sched.gcwaiting != 0 {
@@ -2854,6 +2861,7 @@ func schedule() {
 top:
 	// 如果当前GC需要停止整个世界（STW), 则调用gcstopm休眠当前的M
 	if sched.gcwaiting != 0 {
+		// 为了STW，停止当前的M
 		gcstopm()
 		// STW结束后回到 top
 		goto top
@@ -2877,11 +2885,12 @@ top:
 	}
 
 	// 如果当前GC正在标记阶段, 则查找有没有待运行的GC Worker, GC Worker也是一个G
+	// gcBlackenEnabled 在gc mark阶段会被置为1
 	if gp == nil && gcBlackenEnabled != 0 {
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 	}
 
-	// 以下都是想方设法找到可以运行的g，按照一下的顺序
+	// 以下都是想方设法找到可以运行的g，按照以下的顺序
 	// 1. 每隔61次调度轮回从全局队列找
 	// 2. 从p.runnext获取g，从p的本地队列中获取
 	// 3. 尝试从全局队列中获取G
@@ -2930,7 +2939,7 @@ top:
 	}
 
 	// println("execute goroutine", gp.goid)
-	// 真正执行gp
+	// 找到了g，那就执行g上的任务函数
 	execute(gp, inheritTime)
 }
 
@@ -3738,13 +3747,15 @@ func newproc(siz int32, fn *funcval) {
 // 根据函数参数和函数地址，创建一个新的G，然后将这个G加入队列等待运行
 // callerpc是newproc函数的pc
 func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
-	print("fn=", fn.fn, " argp=", argp, " narg=", narg, " callerpc=", callerpc, "\n")
-	_g_ := getg()
+	// print("fn=", fn.fn, " argp=", argp, " narg=", narg, " callerpc=", callerpc, "\n")
+	_g_ := getg() // g0
 
+	// 任务函数如果为nil，则抛出异常
 	if fn == nil {
 		_g_.m.throwing = -1 // do not dump full stacks
 		throw("go of nil func value")
 	}
+	// 禁用抢占，因为它可以在本地var中保存p
 	_g_.m.locks++ // disable preemption because it can be holding p in a local var
 	siz := narg
 	siz = (siz + 7) &^ 7
@@ -3760,7 +3771,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 
 	// 从m中获取p
 	_p_ := _g_.m.p.ptr()
-	// 从gfree list获取g
+	// 尝试从gfree list获取g，包括本地和全局list
 	newg := gfget(_p_)
 	// 如果没获取到g，则新建一个
 	if newg == nil {
@@ -3774,6 +3785,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 		throw("newproc1: newg missing stack")
 	}
 
+	// 此时获取的g一定得是 _Gdead
 	if readgstatus(newg) != _Gdead {
 		throw("newproc1: new g is not Gdead")
 	}
@@ -3863,6 +3875,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, callerpc uintptr) {
 	// 如果有空闲的p 且 m没有处于自旋状态 且 main goroutine已经启动，那么唤醒某个m来执行任务
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && mainStarted {
 		// 如果还有空闲P，那么新建M来运行G
+		print("wakeup ", newg.goid, " ", sched.npidle, " ", sched.nmspinning, "\n")
 		wakep()
 	}
 	_g_.m.locks--
@@ -3912,8 +3925,10 @@ func gfput(_p_ *p, gp *g) {
 
 // Get from gfree list.
 // If local list is empty, grab a batch from global list.
+// 从p的本地空闲链表获取g，如果获取不到尝试从全局链表里获取
 func gfget(_p_ *p) *g {
 retry:
+	// 本地g空闲链表
 	gp := _p_.gfree
 	if gp == nil && (sched.gfreeStack != nil || sched.gfreeNoStack != nil) {
 		lock(&sched.gflock)
@@ -4414,8 +4429,10 @@ func procresize(nprocs int32) *p {
 	}
 
 	// initialize new P's
+	// 检查p是否初始化了，如果没有初始化，则进行初始化
 	for i := int32(0); i < nprocs; i++ {
 		pp := allp[i]
+		// 如果p是nil，进行初始化
 		if pp == nil {
 			pp = new(p)
 			pp.id = i

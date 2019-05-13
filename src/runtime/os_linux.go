@@ -138,6 +138,11 @@ const (
 
 //go:noescape
 // 在 runtime/sys_linux_amd64.s 中汇编实现
+// 在c语言中 int clone(int (*fn)(void *), void *child_stack, int flags, void *arg);
+// 这里fn是函数指针，我们知道进程的4要素，这个就是指向程序的指针，就是所谓的“剧本",
+// child_stack明显是为子进程分配系统堆栈空间（在linux下系统堆栈空间，其中在这块内存中，
+// 低地址上放入了值，这个值就是进程控制块task_struct的值）,flags就是标志用来描述你需要从父进程继承那些资源，arg就是传给子进程的参数）。
+// http://www.tutorialspoint.com/unix_system_calls/clone.htm
 func clone(flags int32, stk, mp, gp, fn unsafe.Pointer) int32
 
 // May run with m.p==nil, so write barriers are not allowed.
@@ -156,6 +161,7 @@ func newosproc(mp *m, stk unsafe.Pointer) {
 	// with signals disabled. It will enable them in minit.
 	var oset sigset
 	sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
+	// stk 是 g0.stack.hi，也就是说 g0 的堆栈是当前这个系统线程的堆栈，也被称为系统堆栈
 	ret := clone(cloneFlags, stk, unsafe.Pointer(mp), unsafe.Pointer(mp.g0), unsafe.Pointer(funcPC(mstart)))
 	sigprocmask(_SIG_SETMASK, &oset, nil)
 

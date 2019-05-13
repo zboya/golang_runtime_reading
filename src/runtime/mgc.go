@@ -351,7 +351,7 @@ var writeBarrier struct {
 // gcBlackenEnabled is 1 if mutator assists and background mark
 // workers are allowed to blacken objects. This must only be set when
 // gcphase == _GCmark.
-// 在_GCmar阶段会被设置为1
+// 在 _GCmark 阶段会被设置为1
 var gcBlackenEnabled uint32
 
 // gcBlackenPromptly indicates that optimizations that may
