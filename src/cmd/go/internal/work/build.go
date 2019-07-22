@@ -20,6 +20,7 @@ import (
 	"cmd/go/internal/load"
 )
 
+// go build 命令
 var CmdBuild = &base.Command{
 	UsageLine: "build [-o output] [-i] [build flags] [packages]",
 	Short:     "compile packages and dependencies",
@@ -273,6 +274,7 @@ var pkgsFilter = func(pkgs []*load.Package) []*load.Package { return pkgs }
 
 var runtimeVersion = runtime.Version()
 
+// runBuild 执行build命令对应的函数
 func runBuild(cmd *base.Command, args []string) {
 	BuildInit()
 	var b Builder

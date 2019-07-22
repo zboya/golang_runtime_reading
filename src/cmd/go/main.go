@@ -128,6 +128,7 @@ func main() {
 		}
 	}
 
+	// 遍历执行的命令，并调用cmd.Run来执行相对应的命令
 	for _, cmd := range base.Commands {
 		if cmd.Name() == args[0] && cmd.Runnable() {
 			cmd.Flag.Usage = func() { cmd.Usage() }
