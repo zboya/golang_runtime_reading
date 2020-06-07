@@ -70,6 +70,7 @@ func (f *fixalloc) alloc() unsafe.Pointer {
 		throw("runtime: internal error")
 	}
 
+	// 空闲列表里是否有数据
 	if f.list != nil {
 		v := unsafe.Pointer(f.list)
 		f.list = f.list.next
@@ -80,6 +81,7 @@ func (f *fixalloc) alloc() unsafe.Pointer {
 		return v
 	}
 	if uintptr(f.nchunk) < f.size {
+		// 固定分配16k
 		f.chunk = uintptr(persistentalloc(_FixAllocChunk, 0, f.stat))
 		f.nchunk = _FixAllocChunk
 	}

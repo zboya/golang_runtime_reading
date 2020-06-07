@@ -168,6 +168,7 @@ var initSigmask sigset
 // 由 asm_amd64.s 中 runtime·rt0_go来调用，为真正的main函数准备
 // The main goroutine.
 func main() {
+	println("in main.....")
 	// 获取 main goroutine
 	g := getg()
 
@@ -367,7 +368,7 @@ func goschedguarded() {
 // unlockf must not access this G's stack, as it may be moved between
 // the call to gopark and the call to unlockf.
 //
-// channel,Go语言的定时器、网络IO操作都会调用 gopark。
+// channel、Go语言的定时器、网络IO操作都会调用 gopark。
 // unlockf 解锁函数指针，lock Lock 指针，reason park 的原因
 // 暂停当前G的运行，用 unlockf 作为判断是否恢复运行，所以该G必须主动恢复，
 // 否则该任务会遗失。
@@ -760,6 +761,7 @@ func ready(gp *g, traceskip int, next bool) {
 	// status is Gwaiting or Gscanwaiting, make Grunnable and put on runq
 	casgstatus(gp, _Gwaiting, _Grunnable)
 	runqput(_g_.m.p.ptr(), gp, next)
+	// 如果有空闲P且没有自旋的M。
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 {
 		wakep()
 	}
@@ -2343,7 +2345,7 @@ func handoffp(_p_ *p) {
 func wakep() {
 	// be conservative about spinning threads
 	// 如果有其他的M处于自旋状态，那么就不管了，直接返回
-	// 因为自旋的M回拼命找G来运行的，就不新找一个M（劳动者）来运行了。
+	// 因为自旋的M会拼命找G来运行的，就不新找一个M（劳动者）来运行了。
 	if !atomic.Cas(&sched.nmspinning, 0, 1) {
 		return
 	}
@@ -2576,8 +2578,7 @@ top:
 	// This is necessary to prevent excessive CPU consumption
 	// when GOMAXPROCS>>1 but the program parallelism is low.
 	//
-	// 如果当前的M没在自旋 且 正在自旋的M数量大于等于正在使用的P的数量，那么block
-	// 当GOMAXPROCS远大于1，但程序并行度低时，防止过多的CPU消耗。
+	// 如果当前的M没在自旋 且 正在自旋的M个数的2倍>=正在忙的p的个数时，不让该M进入自旋状态
 	if !_g_.m.spinning && 2*atomic.Load(&sched.nmspinning) >= procs-atomic.Load(&sched.npidle) {
 		goto stop
 	}
@@ -3234,7 +3235,7 @@ func reentersyscall(pc, sp uintptr) {
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
-	// 让G进入_Gsyscall状态，此时G已经被挂起了，直到系统调用结束，才会让G重新写进入running
+	// 让G进入_Gsyscall状态，此时G已经被挂起了，直到系统调用结束，才会让G重新进入running
 	casgstatus(_g_, _Grunning, _Gsyscall)
 	// 检查栈是否超出
 	if _g_.syscallsp < _g_.stack.lo || _g_.stack.hi < _g_.syscallsp {
@@ -4677,6 +4678,8 @@ func checkdead() {
 		return
 	}
 
+	// m个数-没事做的m-被锁的m-runtime自身使用的m（如：sysmon）
+	// 也就是正在运行的m的个数
 	run := mcount() - sched.nmidle - sched.nmidlelocked - sched.nmsys
 	if run > 0 {
 		return
@@ -4827,7 +4830,8 @@ func sysmon() {
 		// poll network if not polled for more than 10ms
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		now := nanotime()
-		// 获取超过10ms的netpoll结果
+		// 如果超过10ms都没进行 netpoll ，那么强制执行一次 netpoll，
+		// 并且如果获取到了可运行的G，那么插入全局列表。
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			atomic.Cas64(&sched.lastpoll, uint64(lastpoll), uint64(now))
 			gp := netpoll(false) // non-blocking - returns list of goroutines

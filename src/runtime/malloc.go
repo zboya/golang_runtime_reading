@@ -292,6 +292,7 @@ func mallocinit() {
 	testdefersizes()
 
 	// Copy class sizes out for statistics table.
+	// 67种class类型
 	for i := range class_to_size {
 		memstats.by_size[i].size = uint32(class_to_size[i])
 	}
@@ -305,6 +306,7 @@ func mallocinit() {
 		print("system page size (", physPageSize, ") is smaller than minimum page size (", minPhysPageSize, ")\n")
 		throw("bad system page size")
 	}
+	// 检查physPageSize是否是2的倍数
 	if physPageSize&(physPageSize-1) != 0 {
 		print("system page size (", physPageSize, ") must be a power of 2\n")
 		throw("bad system page size")

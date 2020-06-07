@@ -82,6 +82,7 @@ var emptymspan mspan
 // 新建一个 mcache
 func allocmcache() *mcache {
 	lock(&mheap_.lock)
+	// 获取一个mcache对象
 	c := (*mcache)(mheap_.cachealloc.alloc())
 	unlock(&mheap_.lock)
 	for i := range c.alloc {
