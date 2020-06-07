@@ -4678,6 +4678,8 @@ func checkdead() {
 		return
 	}
 
+	// m个数-没事做的m-被锁的m-runtime自身使用的m（如：sysmon）
+	// 也就是正在运行的m的个数
 	run := mcount() - sched.nmidle - sched.nmidlelocked - sched.nmsys
 	if run > 0 {
 		return

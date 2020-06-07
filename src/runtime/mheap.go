@@ -559,6 +559,9 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 	// Map metadata structures. But don't map race detector memory
 	// since we're not actually growing the arena here (and TSAN
 	// gets mad if you map 0 bytes).
+	// 映射元数据结构。但是不要映射竞争检测器内存，
+	// 因为我们实际上并没有在这里增加arena（如果你映射0字节，TSAN就会疯掉）。
+	// thread sanitizer (tsan)
 	h.setArenaUsed(h.arena_used, false)
 }
 
@@ -567,6 +570,7 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 //
 // racemap indicates that this memory should be managed by the race
 // detector. racemap should be true unless this is covering a VM hole.
+// 更新heap.spans和bitmap分配内存相关信息
 func (h *mheap) setArenaUsed(arena_used uintptr, racemap bool) {
 	// Map auxiliary structures *before* h.arena_used is updated.
 	// Waiting to update arena_used until after the memory has been mapped
